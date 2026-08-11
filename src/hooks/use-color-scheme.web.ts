@@ -8,6 +8,10 @@ export function useColorScheme() {
   const [hasHydrated, setHasHydrated] = useState(false);
 
   useEffect(() => {
+    // Intentional: the whole point is to detect that hydration has happened, so
+    // the first client render can match the static HTML before switching to the
+    // real scheme. There is no external system to subscribe to here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasHydrated(true);
   }, []);
 
