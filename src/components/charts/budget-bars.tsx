@@ -14,7 +14,7 @@
 import { StyleSheet, View, type DimensionValue } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { ChartInk, slotColor } from '@/constants/palette';
+import { ChartInk, slotColor, withAlpha } from '@/constants/palette';
 import { Spacing } from '@/constants/theme';
 import type { BudgetProgress } from '@/db/types';
 import { useScheme } from '@/hooks/use-scheme';
@@ -23,7 +23,7 @@ import { formatMoney, percentOf } from '@/lib/money';
 const BAR_HEIGHT = 10;
 const END_RADIUS = 4;
 /** Track opacity — a lighter step of the bar's own hue, not a neutral gray. */
-const TRACK_ALPHA = '24';
+const TRACK_ALPHA = 0.16;
 
 function BudgetBar({
   entry,
@@ -57,7 +57,10 @@ function BudgetBar({
       </View>
 
       <View
-        style={[styles.track, { backgroundColor: `${slotColor(entry.budget.colorSlot, scheme)}${TRACK_ALPHA}` }]}>
+        style={[
+          styles.track,
+          { backgroundColor: withAlpha(slotColor(entry.budget.colorSlot, scheme), TRACK_ALPHA) },
+        ]}>
         <View style={[styles.fill, { width: fillWidth, backgroundColor: color }]} />
       </View>
 
@@ -73,6 +76,38 @@ function BudgetBar({
             : `${entry.daysLeft} ${entry.daysLeft === 1 ? 'day' : 'days'} left`}
         </ThemedText>
       </View>
+    </View>
+  );
+}
+
+/**
+ * A budget with no limit: the running total, and a dot so the pot is still
+ * recognisable by its colour. Without the dot these rows are the only place in
+ * the app where a budget appears with no colour at all, which makes the card
+ * read as two unrelated lists rather than as capped and uncapped halves of one.
+ */
+function UncappedRow({
+  entry,
+  currencyCode,
+}: {
+  entry: BudgetProgress;
+  currencyCode: string;
+}) {
+  const scheme = useScheme();
+
+  return (
+    <View style={styles.labelRow}>
+      <View style={styles.uncappedName}>
+        <View
+          style={[styles.dot, { backgroundColor: slotColor(entry.budget.colorSlot, scheme) }]}
+        />
+        <ThemedText type="label" numberOfLines={1} style={styles.name}>
+          {entry.budget.name}
+        </ThemedText>
+      </View>
+      <ThemedText type="label" style={styles.amounts}>
+        {formatMoney(entry.spentMinor, currencyCode)}
+      </ThemedText>
     </View>
   );
 }
@@ -96,14 +131,7 @@ export function BudgetBars({
       {uncapped.length > 0 && (
         <View style={styles.uncapped}>
           {uncapped.map((entry) => (
-            <View key={entry.budget.id} style={styles.labelRow}>
-              <ThemedText type="label" numberOfLines={1} style={styles.name}>
-                {entry.budget.name}
-              </ThemedText>
-              <ThemedText type="label" style={styles.amounts}>
-                {formatMoney(entry.spentMinor, currencyCode)}
-              </ThemedText>
-            </View>
+            <UncappedRow key={entry.budget.id} entry={entry} currencyCode={currencyCode} />
           ))}
         </View>
       )}
@@ -147,5 +175,16 @@ const styles = StyleSheet.create({
   uncapped: {
     gap: Spacing.two,
     paddingTop: Spacing.two,
+  },
+  uncappedName: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    flexShrink: 1,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
 });

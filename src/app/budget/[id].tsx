@@ -8,20 +8,22 @@
 
 import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
-import { CategoricalPalette, nextFreeSlot, slotColor } from '@/constants/palette';
+import { ColorPicker } from '@/components/ui/color-picker';
+import { DayOfMonthPicker } from '@/components/ui/day-of-month-picker';
+import { nextFreeSlot } from '@/constants/palette';
 import { FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useData } from '@/data/store';
 import { useDismiss } from '@/hooks/use-dismiss';
 import { confirmDestructive } from '@/lib/confirm';
 import type { BudgetCycle } from '@/db/types';
-import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
+import { formatOrdinalDay } from '@/lib/date';
 import { minorToInput, parseAmountToMinor } from '@/lib/money';
 
 export default function BudgetScreen() {
@@ -29,7 +31,6 @@ export default function BudgetScreen() {
   const dismiss = useDismiss();
   const navigation = useNavigation();
   const theme = useTheme();
-  const scheme = useScheme();
   const { budgets, mutate, preferences } = useData();
 
   const isNew = id === 'new';
@@ -40,6 +41,9 @@ export default function BudgetScreen() {
     existing?.limitMinor != null ? minorToInput(existing.limitMinor, preferences.currencyCode) : ''
   );
   const [cycle, setCycle] = useState<BudgetCycle>(existing?.cycle ?? 'monthly');
+  // Null means "follow the app-wide period", which is what a new budget should
+  // do — the point of the setting is that most budgets track the salary.
+  const [resetDay, setResetDay] = useState<number | null>(existing?.resetDay ?? null);
   const [colorSlot, setColorSlot] = useState(
     existing?.colorSlot ?? nextFreeSlot(budgets.map((budget) => budget.colorSlot))
   );
@@ -59,6 +63,10 @@ export default function BudgetScreen() {
       name: trimmedName,
       limitMinor: limit.trim() === '' ? null : parseAmountToMinor(limit, preferences.currencyCode),
       cycle,
+      // Cleared on a weekly budget rather than kept: a stored day that nothing
+      // reads would come back to life if the user ever flipped the cycle back,
+      // silently, months later.
+      resetDay: cycle === 'monthly' ? resetDay : null,
       colorSlot,
     };
 
@@ -112,7 +120,7 @@ export default function BudgetScreen() {
           </View>
         </Field>
 
-        <Field label="Resets">
+        <Field label="Spending resets">
           <View style={styles.row}>
             {(['weekly', 'monthly'] as const).map((option) => (
               <Chip
@@ -125,25 +133,25 @@ export default function BudgetScreen() {
           </View>
         </Field>
 
+        {/* Only for monthly budgets. A week has no day-of-month to restart on,
+            and showing a disabled grid would be a control that never works.
+
+            Labelled "Each month starts on" rather than anything with "reset"
+            in it: sitting directly under "Resets", a second reset-shaped label
+            reads as a rival setting rather than as the day the one above it
+            happens on. */}
+        {cycle === 'monthly' && (
+          <Field label="Each month starts on">
+            <DayOfMonthPicker
+              selected={resetDay}
+              onSelect={setResetDay}
+              followLabel={`Same as app (${formatOrdinalDay(preferences.periodStartDay)})`}
+            />
+          </Field>
+        )}
+
         <Field label="Colour">
-          <View style={styles.row}>
-            {CategoricalPalette[scheme].map((_, slot) => (
-              <Pressable
-                key={slot}
-                onPress={() => setColorSlot(slot)}
-                accessibilityRole="button"
-                accessibilityLabel={`Colour ${slot + 1}`}
-                accessibilityState={{ selected: colorSlot === slot }}
-                style={[
-                  styles.swatch,
-                  {
-                    backgroundColor: slotColor(slot, scheme),
-                    borderColor: colorSlot === slot ? theme.text : 'transparent',
-                  },
-                ]}
-              />
-            ))}
-          </View>
+          <ColorPicker selected={colorSlot} onSelect={setColorSlot} />
         </Field>
 
         <Button label={isNew ? 'Create budget' : 'Save changes'} onPress={save} disabled={!canSave} />
@@ -193,14 +201,5 @@ const styles = StyleSheet.create({
   input: {
     ...FieldText,
     paddingVertical: 14,
-  },
-  swatch: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 2,
-  },
-  pressed: {
-    opacity: 0.6,
   },
 });

@@ -15,16 +15,18 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Card } from '@/components/ui/card';
 import { Chip } from '@/components/ui/chip';
+import { DayOfMonthPicker } from '@/components/ui/day-of-month-picker';
 import { findCountry } from '@/constants/countries';
 import { findCurrency } from '@/constants/currencies';
 import { slotColor } from '@/constants/palette';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useAuth } from '@/data/auth';
 import { useData, useQuery } from '@/data/store';
+import type { Budget } from '@/db/types';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmDestructive } from '@/lib/confirm';
-import { formatTimeOfDay, today } from '@/lib/date';
+import { formatOrdinalDay, formatPeriodLabel, formatTimeOfDay, periodRange, today } from '@/lib/date';
 import { ensureNotificationPermission } from '@/lib/notifications';
 import { formatMoney } from '@/lib/money';
 
@@ -56,6 +58,8 @@ export default function ProfileScreen() {
   const { data: progress } = useQuery((repo) => repo.budgetProgress(today()), []);
   const monthTotal = (progress ?? []).reduce((sum, entry) => sum + entry.spentMinor, 0);
 
+  const currentPeriod = periodRange(today(), preferences.periodStartDay);
+
   async function setReminderEnabled(enabled: boolean) {
     // Ask before writing the preference, so a denied prompt doesn't leave the
     // switch on with nothing scheduled behind it.
@@ -82,6 +86,25 @@ export default function ProfileScreen() {
             </ThemedText>
             <ThemedText type="label" themeColor="textSecondary">
               across {budgets.length} {budgets.length === 1 ? 'budget' : 'budgets'}
+            </ThemedText>
+          </Card>
+
+          <Card title="Budget period">
+            <ThemedText type="label" themeColor="textSecondary">
+              Budgets restart on this day each month, and Home and Activity report the
+              same span. Set it to the day you get paid — money that arrives on the 25th
+              is the 25th&apos;s to spend, not the 1st&apos;s.
+            </ThemedText>
+            <DayOfMonthPicker
+              selected={preferences.periodStartDay}
+              onSelect={(day) => {
+                // Null is unreachable without `followLabel` — there is nothing
+                // above this setting for it to follow.
+                if (day !== null) void mutate((repo) => repo.setPreferences({ periodStartDay: day }));
+              }}
+            />
+            <ThemedText type="label" themeColor="textSecondary">
+              Now: {formatPeriodLabel(currentPeriod.start, currentPeriod.end)}
             </ThemedText>
           </Card>
 
@@ -155,23 +178,38 @@ export default function ProfileScreen() {
                 <View
                   style={[styles.dot, { backgroundColor: slotColor(budget.colorSlot, scheme) }]}
                 />
-                <ThemedText style={styles.listLabel}>{budget.name}</ThemedText>
-                <ThemedText type="label" themeColor="textSecondary">
-                  {budget.limitMinor === null
-                    ? 'No limit'
-                    : `${formatMoney(budget.limitMinor, preferences.currencyCode)} / ${budget.cycle === 'weekly' ? 'week' : 'month'}`}
+                {/* Both sides capped to a line. A `flex: 1` Text with an
+                    unbounded sibling wraps per *character* rather than
+                    truncating, which turned a long summary into a vertical
+                    column of letters. */}
+                <ThemedText style={styles.listLabel} numberOfLines={1}>
+                  {budget.name}
+                </ThemedText>
+                <ThemedText type="label" themeColor="textSecondary" numberOfLines={1}>
+                  {budgetSummary(budget, preferences.currencyCode)}
                 </ThemedText>
               </Pressable>
             ))}
           </Card>
 
-          <Card title="Categories">
+          <Card
+            title="Categories"
+            action={
+              <ThemedText
+                type="label"
+                themeColor="textSecondary"
+                onPress={() => router.push('/category/new')}>
+                Add
+              </ThemedText>
+            }>
             <View style={styles.chipWrap}>
               {categories.map((category) => (
                 <Chip
                   key={category.id}
                   label={category.name}
                   color={slotColor(category.colorSlot, scheme)}
+                  icon={category.icon}
+                  onPress={() => router.push(`/category/${category.id}`)}
                 />
               ))}
             </View>
@@ -245,6 +283,26 @@ export default function ProfileScreen() {
       </SafeAreaView>
     </ThemedView>
   );
+}
+
+/**
+ * The trailing line on a budget row: its limit, and its own restart day where
+ * it has one.
+ *
+ * The day is only spelled out for budgets that pinned one. Printing it on every
+ * row would bury the exception — the whole point of the list is to make a
+ * budget that *doesn't* follow the app-wide period stand out.
+ */
+function budgetSummary(budget: Budget, currencyCode: string): string {
+  const limit =
+    budget.limitMinor === null
+      ? 'No limit'
+      : `${formatMoney(budget.limitMinor, currencyCode)} / ${budget.cycle === 'weekly' ? 'week' : 'month'}`;
+
+  // `== null` deliberately, to catch the `undefined` a pre-migration database
+  // hands back as well as a genuine "follows the app-wide period".
+  if (budget.cycle === 'weekly' || budget.resetDay == null) return limit;
+  return `${limit} · resets ${formatOrdinalDay(budget.resetDay)}`;
 }
 
 function minuteOfDayToDate(minuteOfDay: number): Date {

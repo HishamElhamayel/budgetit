@@ -1,5 +1,5 @@
 /**
- * Activity — the ledger, both directions, filterable by day or month.
+ * Activity — the ledger, both directions, filterable by day or budget period.
  *
  * Income lives here rather than on a screen of its own because the question the
  * list answers is "what happened to my money", and a paycheck is half that
@@ -27,15 +27,16 @@ import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   addDays,
-  endOfMonth,
+  addPeriods,
+  DefaultPeriodStartDay,
   formatDayLabel,
-  formatMonthLabel,
-  startOfMonth,
+  formatPeriodLabel,
+  periodRange,
   today,
 } from '@/lib/date';
 import { formatMoney } from '@/lib/money';
 
-type Period = 'day' | 'month';
+type Period = 'day' | 'period';
 
 /** The local calendar day an entry falls on, whichever kind it is. */
 function entryDay(entry: ActivityEntry): string {
@@ -47,17 +48,20 @@ export default function ActivityScreen() {
   const scheme = useScheme();
   const { preferences } = useData();
 
-  const [period, setPeriod] = useState<Period>('month');
+  const [period, setPeriod] = useState<Period>('period');
   const [anchor, setAnchor] = useState(today());
   const [search, setSearch] = useState('');
 
-  const range = useMemo(
-    () =>
-      period === 'day'
-        ? { from: anchor, to: anchor }
-        : { from: startOfMonth(anchor), to: endOfMonth(anchor) },
-    [period, anchor]
-  );
+  // The ledger spans the same window as the budgets do, so a period's totals
+  // here and the bars on Home can be read against each other.
+  const startDay = preferences.periodStartDay;
+  const calendarMonths = startDay === DefaultPeriodStartDay;
+
+  const range = useMemo(() => {
+    if (period === 'day') return { from: anchor, to: anchor };
+    const { start, end } = periodRange(anchor, startDay);
+    return { from: start, to: end };
+  }, [period, anchor, startDay]);
 
   // Two reads merged here rather than one `listActivity` on the repository.
   // Expenses and income are separate tables with separate date columns, so a
@@ -98,14 +102,15 @@ export default function ActivityScreen() {
       setAnchor(addDays(anchor, direction));
       return;
     }
-    // Step a whole month by landing on the 1st and moving one day past the edge.
-    const first = startOfMonth(anchor);
-    setAnchor(direction === -1 ? startOfMonth(addDays(first, -1)) : addDays(endOfMonth(first), 1));
+    setAnchor(addPeriods(anchor, startDay, direction));
   }
 
   const periodLabel =
-    period === 'day' ? formatDayLabel(anchor) : formatMonthLabel(anchor.slice(0, 7));
-  const atPresent = period === 'day' ? anchor >= today() : anchor.slice(0, 7) >= today().slice(0, 7);
+    period === 'day' ? formatDayLabel(anchor) : formatPeriodLabel(range.from, range.to);
+  // Compared on the period's *start*, not on a month key: with a custom start
+  // day two dates in the same calendar month can belong to different periods.
+  const atPresent =
+    period === 'day' ? anchor >= today() : range.from >= periodRange(today(), startDay).start;
 
   return (
     <ThemedView style={styles.root}>
@@ -113,7 +118,13 @@ export default function ActivityScreen() {
         <View style={styles.header}>
           <View style={styles.periodToggle}>
             <Chip label="Day" selected={period === 'day'} onPress={() => setPeriod('day')} />
-            <Chip label="Month" selected={period === 'month'} onPress={() => setPeriod('month')} />
+            {/* "Month" only while a period *is* a month — otherwise the chip
+                would name a span it no longer covers. */}
+            <Chip
+              label={calendarMonths ? 'Month' : 'Period'}
+              selected={period === 'period'}
+              onPress={() => setPeriod('period')}
+            />
           </View>
 
           <View style={styles.navRow}>

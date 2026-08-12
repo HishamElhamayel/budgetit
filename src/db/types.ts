@@ -36,6 +36,15 @@ export interface Budget extends SyncFields {
   /** Minor units. Null means "track spending here, but don't cap it". */
   limitMinor: number | null;
   cycle: BudgetCycle;
+  /**
+   * Day of the month a `monthly` cycle restarts on, 1–31. Ignored by `weekly`.
+   *
+   * Null means "follow {@link Preferences.periodStartDay}" rather than "the
+   * 1st", so moving payday is one edit in settings instead of one per budget.
+   * A budget that genuinely differs — rent, due on the 1st whatever the salary
+   * does — pins its own day and stops tracking the app-wide one.
+   */
+  resetDay: number | null;
   /** Palette slot index, resolved to a hex per colour scheme at render time. */
   colorSlot: number;
   sortOrder: number;
@@ -180,4 +189,15 @@ export interface Preferences {
   reminderMinuteOfDay: number;
   onboardingCompletedAt: string | null;
   currencyCode: string;
+  /**
+   * Day of the month every budget period starts on, 1–31. 1 is the calendar
+   * month; 25 is "my salary lands on the 25th, so that is when the month
+   * starts as far as my money is concerned".
+   *
+   * App-wide rather than per-budget because the ledger views — Home's in/out
+   * card and the Activity list — have no budget to take a period from, and a
+   * "left this period" that meant a different span on each screen would be
+   * worse than no setting at all.
+   */
+  periodStartDay: number;
 }

@@ -39,6 +39,8 @@ export interface BudgetInput {
   name: string;
   limitMinor: number | null;
   cycle: BudgetCycle;
+  /** 1–31, or null to follow the app-wide `periodStartDay`. Monthly only. */
+  resetDay: number | null;
   colorSlot: number;
 }
 

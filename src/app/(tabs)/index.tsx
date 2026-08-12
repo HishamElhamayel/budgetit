@@ -24,7 +24,7 @@ import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useData, useQuery } from '@/data/store';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
-import { endOfMonth, formatMonthLabel, startOfMonth, today } from '@/lib/date';
+import { DefaultPeriodStartDay, formatPeriodLabel, periodRange, today } from '@/lib/date';
 import { formatMoney } from '@/lib/money';
 import { greetingName, timeOfDayGreeting } from '@/lib/name';
 
@@ -38,27 +38,30 @@ export default function HomeScreen() {
   const name = greetingName(profile?.fullName);
 
   const day = today();
-  const monthStart = startOfMonth(day);
-  const monthEnd = endOfMonth(day);
+  // The user's pay cycle, not the calendar's. Everything on this screen spans
+  // the same window as the budget bars below it, so "left" and "spent" are
+  // answers to the same question.
+  const { start: periodStart, end: periodEnd } = periodRange(day, preferences.periodStartDay);
+  const calendarMonths = preferences.periodStartDay === DefaultPeriodStartDay;
 
   const { data: categoryTotals } = useQuery(
     (repo) =>
       repo.categoryTotals({
-        from: monthStart,
-        to: monthEnd,
+        from: periodStart,
+        to: periodEnd,
         budgetId: selectedBudgetId ?? undefined,
       }),
-    [monthStart, monthEnd, selectedBudgetId]
+    [periodStart, periodEnd, selectedBudgetId]
   );
 
   const { data: progress } = useQuery((repo) => repo.budgetProgress(day), [day]);
 
-  // Whole-month flow, deliberately unfiltered by the selected budget: income
+  // Whole-period flow, deliberately unfiltered by the selected budget: income
   // often isn't tagged to a pot at all, so a filtered "left" would routinely
   // read as negative and mean nothing.
-  const { data: flow } = useQuery((repo) => repo.monthFlow(monthStart, monthEnd), [
-    monthStart,
-    monthEnd,
+  const { data: flow } = useQuery((repo) => repo.monthFlow(periodStart, periodEnd), [
+    periodStart,
+    periodEnd,
   ]);
 
   // Keyed off the completion flag rather than `budgets.length === 0`: onboarding
@@ -112,7 +115,7 @@ export default function HomeScreen() {
               </Card>
 
               <ThemedText type="label" themeColor="textSecondary" style={styles.sectionLabel}>
-                {formatMonthLabel(day.slice(0, 7))}
+                {formatPeriodLabel(periodStart, periodEnd)}
               </ThemedText>
 
               <Card>
@@ -138,7 +141,11 @@ export default function HomeScreen() {
                   user hasn't used yet.
                 */}
                 {!!flow?.openingMinor && (
-                  <CarriedLine minor={flow.openingMinor} currencyCode={preferences.currencyCode} />
+                  <CarriedLine
+                    minor={flow.openingMinor}
+                    currencyCode={preferences.currencyCode}
+                    periodWord={calendarMonths ? 'months' : 'periods'}
+                  />
                 )}
               </Card>
 
@@ -146,7 +153,9 @@ export default function HomeScreen() {
                 <DonutChart
                   totals={categoryTotals ?? []}
                   currencyCode={preferences.currencyCode}
-                  centerLabel={selectedBudgetId ? 'this budget' : 'this month'}
+                  centerLabel={
+                    selectedBudgetId ? 'this budget' : calendarMonths ? 'this month' : 'this period'
+                  }
                 />
               </Card>
 
@@ -208,7 +217,15 @@ function FlowStat({
  * cumulative over all history, and naming July would be wrong for anyone who
  * also had something left in June.
  */
-function CarriedLine({ minor, currencyCode }: { minor: number; currencyCode: string }) {
+function CarriedLine({
+  minor,
+  currencyCode,
+  periodWord,
+}: {
+  minor: number;
+  currencyCode: string;
+  periodWord: string;
+}) {
   const theme = useTheme();
   const scheme = useScheme();
   const ink = ChartInk[scheme];
@@ -222,7 +239,7 @@ function CarriedLine({ minor, currencyCode }: { minor: number; currencyCode: str
           {minor > 0 ? '+' : ''}
           {formatMoney(minor, currencyCode)}
         </ThemedText>{' '}
-        carried over from earlier months
+        carried over from earlier {periodWord}
       </ThemedText>
     </View>
   );

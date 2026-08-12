@@ -6,6 +6,8 @@ import Swipeable, {
 } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { ThemedText } from '@/components/themed-text';
+import { GlyphDisc } from '@/components/ui/glyph';
+import { SystemSymbols } from '@/constants/icons';
 import { ChartInk, slotColor } from '@/constants/palette';
 import { Spacing } from '@/constants/theme';
 import { useData } from '@/data/store';
@@ -29,10 +31,17 @@ const ActionWidth = 96;
 /**
  * One line in the ledger, either kind, swipe-left to delete.
  *
- * The leading dot carries the *budget* colour for an expense and the good-news
- * ink for income, so which direction the money went is legible before any text
- * is read. Amounts are signed for the same reason: in a list that mixes both, an
- * unsigned figure is ambiguous in a way it never was on an expenses-only screen.
+ * The leading disc carries the *category* — its icon on a wash of its colour —
+ * which is the same identity the donut on Home draws, so a slice and the rows
+ * that make it up are recognisably the same thing. It used to be a bare dot in
+ * the budget's colour; the budget is still named in the subtitle, and the thing
+ * a dot could say that the icon can't (which pot paid) was the one fact the
+ * line underneath already stated.
+ *
+ * Income gets the good-news ink and an arrow instead, so which direction the
+ * money went is legible before any text is read. Amounts are signed for the
+ * same reason: in a list that mixes both, an unsigned figure is ambiguous in a
+ * way it never was on an expenses-only screen.
  */
 export function ActivityRow({
   entry,
@@ -60,9 +69,11 @@ export function ActivityRow({
     ? [entry.budgetName, entry.categoryName].filter(Boolean).join(' · ')
     : entry.budgetName ?? 'Not assigned';
 
-  const dotColor = isExpense
-    ? slotColor(entry.budgetColorSlot, scheme)
-    : ChartInk[scheme].good;
+  // Uncategorised expenses fall back to the budget's colour rather than to the
+  // muted ink the donut uses for them: in a list, a grey row reads as disabled.
+  const markColor = !isExpense
+    ? ChartInk[scheme].good
+    : slotColor(entry.categoryColorSlot ?? entry.budgetColorSlot, scheme);
 
   async function confirmDelete() {
     const confirmed = await confirmDestructive(
@@ -135,7 +146,11 @@ export function ActivityRow({
             dragged out. */}
         {({ pressed }) => (
           <View style={[styles.rowContent, pressed && styles.pressed]}>
-            <View style={[styles.dot, { backgroundColor: dotColor }]} />
+            <GlyphDisc
+              icon={isExpense ? entry.categoryIcon : undefined}
+              symbol={isExpense ? undefined : SystemSymbols.income}
+              color={markColor}
+            />
 
             <View style={styles.text}>
               <ThemedText numberOfLines={1}>{title}</ThemedText>
@@ -177,11 +192,6 @@ const styles = StyleSheet.create({
   },
   actionLabel: {
     color: '#FFFFFF',
-  },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
   },
   text: {
     flex: 1,

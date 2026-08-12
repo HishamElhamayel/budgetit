@@ -56,13 +56,14 @@ import type {
   Preferences,
   Profile,
 } from '@/db/types';
-import { cycleRange, daysBetween, today } from '@/lib/date';
+import { clampPeriodStartDay, cycleRange, daysBetween, DefaultPeriodStartDay, today } from '@/lib/date';
 
 const DEFAULT_PREFERENCES: Preferences = {
   reminderEnabled: false,
   reminderMinuteOfDay: 20 * 60, // 8:00pm — after most spending, before bed.
   onboardingCompletedAt: null,
   currencyCode: 'USD',
+  periodStartDay: DefaultPeriodStartDay,
 };
 
 /** Default cap on list reads, matching the SQLite repository. */
@@ -90,6 +91,8 @@ interface BudgetRow {
   name: string;
   limit_minor: number | string | null;
   cycle: string;
+  /** Optional: absent entirely until the reset_day migration is applied. */
+  reset_day?: number | null;
   color_slot: number;
   sort_order: number;
   created_at: string;
@@ -215,6 +218,11 @@ function toBudget(row: BudgetRow): Budget {
     name: row.name,
     limitMinor: nullableMinor(row.limit_minor),
     cycle: row.cycle as BudgetCycle,
+    // Coerced rather than passed through: a client running against a database
+    // that hasn't had the reset_day migration applied gets rows with no such
+    // key at all, and `undefined` slips past the `=== null` checks that decide
+    // whether a budget follows the app-wide period.
+    resetDay: row.reset_day ?? null,
     colorSlot: row.color_slot,
     sortOrder: row.sort_order,
     createdAt: row.created_at,
@@ -365,15 +373,45 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
     return rows.map(toBudget);
   }
 
+  async function getPreferences(): Promise<Preferences> {
+    const rows = unwrap(
+      await client.from('preferences').select('key, value').returns<{ key: string; value: string }[]>()
+    );
+    const stored = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+
+    return {
+      reminderEnabled: stored.reminderEnabled
+        ? stored.reminderEnabled === 'true'
+        : DEFAULT_PREFERENCES.reminderEnabled,
+      reminderMinuteOfDay: stored.reminderMinuteOfDay
+        ? Number(stored.reminderMinuteOfDay)
+        : DEFAULT_PREFERENCES.reminderMinuteOfDay,
+      // Stored as '' when cleared, so `||` rather than `??`.
+      onboardingCompletedAt: stored.onboardingCompletedAt || null,
+      currencyCode: stored.currencyCode ?? DEFAULT_PREFERENCES.currencyCode,
+      // Clamped rather than trusted: this is a free-text value column, and a
+      // junk or out-of-range day would silently shift every period boundary in
+      // the app rather than fail anywhere the user could see it.
+      periodStartDay: clampPeriodStartDay(
+        stored.periodStartDay ? Number(stored.periodStartDay) : DEFAULT_PREFERENCES.periodStartDay
+      ),
+    };
+  }
+
   async function budgetProgress(onDay: string): Promise<BudgetProgress[]> {
-    const budgets = await listBudgets();
+    // Preferences come along because a budget with a null `resetDay` follows
+    // the app-wide period start. Fetched alongside the budgets rather than
+    // after them, so resolving the fallback costs no extra round trip.
+    const [budgets, preferences] = await Promise.all([listBudgets(), getPreferences()]);
     if (budgets.length === 0) return [];
 
     // Each budget has its own cycle, so each has its own range. Rather than one
     // request per budget — which is what the SQLite version did, cheaply, over
     // a local file — fetch the union of every range once and split it up here.
     // Over a network that is the difference between one round trip and N.
-    const ranges = budgets.map((budget) => cycleRange(onDay, budget.cycle));
+    const ranges = budgets.map((budget) =>
+      cycleRange(onDay, budget.cycle, budget.resetDay ?? preferences.periodStartDay)
+    );
     const from = ranges.reduce((min, range) => (range.start < min ? range.start : min), ranges[0].start);
     const to = ranges.reduce((max, range) => (range.end > max ? range.end : max), ranges[0].end);
 
@@ -419,6 +457,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
         name: input.name,
         limit_minor: input.limitMinor,
         cycle: input.cycle,
+        reset_day: input.resetDay,
         color_slot: input.colorSlot,
         sort_order: await nextSortOrder('budgets'),
         created_at: timestamp,
@@ -442,6 +481,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
             name: input.name,
             limit_minor: input.limitMinor,
             cycle: input.cycle,
+            reset_day: input.resetDay,
             color_slot: input.colorSlot,
           })
         )
@@ -818,27 +858,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
     },
 
-    async getPreferences() {
-      const rows = unwrap(
-        await client
-          .from('preferences')
-          .select('key, value')
-          .returns<{ key: string; value: string }[]>()
-      );
-      const stored = Object.fromEntries(rows.map((row) => [row.key, row.value]));
-
-      return {
-        reminderEnabled: stored.reminderEnabled
-          ? stored.reminderEnabled === 'true'
-          : DEFAULT_PREFERENCES.reminderEnabled,
-        reminderMinuteOfDay: stored.reminderMinuteOfDay
-          ? Number(stored.reminderMinuteOfDay)
-          : DEFAULT_PREFERENCES.reminderMinuteOfDay,
-        // Stored as '' when cleared, so `||` rather than `??`.
-        onboardingCompletedAt: stored.onboardingCompletedAt || null,
-        currencyCode: stored.currencyCode ?? DEFAULT_PREFERENCES.currencyCode,
-      };
-    },
+    getPreferences,
 
     async setPreferences(update) {
       const rows = Object.entries(update)

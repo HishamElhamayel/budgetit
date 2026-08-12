@@ -196,6 +196,7 @@ export function ExpenseForm({
               key={category.id}
               label={category.name}
               color={slotColor(category.colorSlot, scheme)}
+              icon={category.icon}
               selected={categoryId === category.id}
               onPress={() => setCategoryOverride(categoryId === category.id ? null : category.id)}
             />

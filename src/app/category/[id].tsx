@@ -9,35 +9,22 @@
 
 import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
-import { Chip } from '@/components/ui/chip';
-import { CategoricalPalette, nextFreeSlot, slotColor } from '@/constants/palette';
-import { FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
+import { ColorPicker } from '@/components/ui/color-picker';
+import { GlyphDisc } from '@/components/ui/glyph';
+import { IconPicker } from '@/components/ui/icon-picker';
+import { DefaultIconKey } from '@/constants/icons';
+import { nextFreeSlot, slotColor } from '@/constants/palette';
+import { FieldText, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useData } from '@/data/store';
 import { useDismiss } from '@/hooks/use-dismiss';
 import { confirmDestructive } from '@/lib/confirm';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
-
-/** SF Symbol / Material Symbol pairs that read the same on both platforms. */
-const ICONS = [
-  'cart',
-  'fork.knife',
-  'car',
-  'bolt',
-  'bag',
-  'sparkles',
-  'house',
-  'heart',
-  'book',
-  'gift',
-  'airplane',
-  'tag',
-];
 
 export default function CategoryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -51,7 +38,7 @@ export default function CategoryScreen() {
   const existing = categories.find((category) => category.id === id);
 
   const [name, setName] = useState(existing?.name ?? '');
-  const [icon, setIcon] = useState(existing?.icon ?? ICONS[0]);
+  const [icon, setIcon] = useState(existing?.icon ?? DefaultIconKey);
   const [colorSlot, setColorSlot] = useState(
     existing?.colorSlot ?? nextFreeSlot(categories.map((category) => category.colorSlot))
   );
@@ -88,6 +75,17 @@ export default function CategoryScreen() {
   return (
     <ThemedView style={styles.root}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* The row this category will become, drawn from the live form values.
+            Icon and colour are choices with no consequence the user can see
+            until they land somewhere — so the somewhere is here, above the
+            fields, updating as they tap. */}
+        <View style={[styles.preview, { backgroundColor: theme.backgroundElement }]}>
+          <GlyphDisc icon={icon} color={slotColor(colorSlot, scheme)} size={44} />
+          <ThemedText type="heading" numberOfLines={1} style={styles.previewName}>
+            {trimmedName || 'New category'}
+          </ThemedText>
+        </View>
+
         <Field label="Name">
           <View style={[styles.inputWrap, { backgroundColor: theme.backgroundElement }]}>
             <TextInput
@@ -102,38 +100,16 @@ export default function CategoryScreen() {
           </View>
         </Field>
 
-        <Field label="Icon">
-          <View style={styles.row}>
-            {ICONS.map((option) => (
-              <Chip
-                key={option}
-                label={option.split('.')[0]}
-                selected={icon === option}
-                onPress={() => setIcon(option)}
-              />
-            ))}
-          </View>
+        <Field label="Colour">
+          <ColorPicker selected={colorSlot} onSelect={setColorSlot} />
         </Field>
 
-        <Field label="Colour">
-          <View style={styles.row}>
-            {CategoricalPalette[scheme].map((_, slot) => (
-              <Pressable
-                key={slot}
-                onPress={() => setColorSlot(slot)}
-                accessibilityRole="button"
-                accessibilityLabel={`Colour ${slot + 1}`}
-                accessibilityState={{ selected: colorSlot === slot }}
-                style={[
-                  styles.swatch,
-                  {
-                    backgroundColor: slotColor(slot, scheme),
-                    borderColor: colorSlot === slot ? theme.text : 'transparent',
-                  },
-                ]}
-              />
-            ))}
-          </View>
+        <Field label="Icon">
+          <IconPicker
+            selected={icon}
+            color={slotColor(colorSlot, scheme)}
+            onSelect={setIcon}
+          />
         </Field>
 
         <Button label={isNew ? 'Create category' : 'Save changes'} onPress={save} disabled={!canSave} />
@@ -171,10 +147,15 @@ const styles = StyleSheet.create({
   field: {
     gap: Spacing.two,
   },
-  row: {
+  preview: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
+    alignItems: 'center',
+    gap: Spacing.three,
+    padding: Spacing.three,
+    borderRadius: Radius.card,
+  },
+  previewName: {
+    flex: 1,
   },
   inputWrap: {
     borderRadius: Spacing.three,
@@ -183,14 +164,5 @@ const styles = StyleSheet.create({
   input: {
     ...FieldText,
     paddingVertical: 14,
-  },
-  swatch: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 2,
-  },
-  pressed: {
-    opacity: 0.6,
   },
 });

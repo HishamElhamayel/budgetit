@@ -106,7 +106,16 @@ export default function OnboardingScreen() {
 
       await mutate(async (repo) => {
         for (const [index, name] of selected.entries()) {
-          await repo.createBudget({ name, limitMinor: null, cycle: 'monthly', colorSlot: index });
+          // `resetDay: null` — follow the app-wide period, which onboarding
+          // doesn't ask about. Someone paid on the 25th sets it once in
+          // Profile afterwards and every budget here moves with it.
+          await repo.createBudget({
+            name,
+            limitMinor: null,
+            cycle: 'monthly',
+            resetDay: null,
+            colorSlot: index,
+          });
         }
         await repo.setPreferences({
           onboardingCompletedAt: nowIso(),
