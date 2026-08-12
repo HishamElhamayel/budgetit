@@ -8,13 +8,13 @@
     "scheme": "budgetit",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.budgetit.app",
+      "bundleIdentifier": "com.budgetit.app.hisham",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.budgetit.app",
+      "package": "com.budgetit.app.hisham",
       "adaptiveIcon": {
         "backgroundColor": "#FF5C21",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

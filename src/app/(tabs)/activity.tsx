@@ -11,8 +11,17 @@
  * description and an income's source — the free-text field on each side.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SectionList, StyleSheet, TextInput, View } from 'react-native';
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeOut,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActivityRow } from '@/components/activity-row';
@@ -21,8 +30,9 @@ import { ThemedView } from '@/components/themed-view';
 import { Chip } from '@/components/ui/chip';
 import { ChartInk } from '@/constants/palette';
 import { BottomTabInset, FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useData, useQuery } from '@/data/store';
+import { useData } from '@/data/store';
 import type { ActivityEntry } from '@/db/types';
+import { useActivityWindow, type ActivityPeriod } from '@/hooks/use-activity-window';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -36,7 +46,7 @@ import {
 } from '@/lib/date';
 import { formatMoney } from '@/lib/money';
 
-type Period = 'day' | 'period';
+type Period = ActivityPeriod;
 
 /** The local calendar day an entry falls on, whichever kind it is. */
 function entryDay(entry: ActivityEntry): string {
@@ -57,26 +67,18 @@ export default function ActivityScreen() {
   const startDay = preferences.periodStartDay;
   const calendarMonths = startDay === DefaultPeriodStartDay;
 
-  const range = useMemo(() => {
-    if (period === 'day') return { from: anchor, to: anchor };
-    const { start, end } = periodRange(anchor, startDay);
-    return { from: start, to: end };
-  }, [period, anchor, startDay]);
+  // The window the user is on, with the ones on either side of it already read
+  // — see hooks/use-activity-window.ts for why stepping used to feel like a
+  // wait and no longer does.
+  const { range, window: activity } = useActivityWindow({
+    anchor,
+    period,
+    startDay,
+    search: search.trim(),
+  });
 
-  // Two reads merged here rather than one `listActivity` on the repository.
-  // Expenses and income are separate tables with separate date columns, so a
-  // combined read would be the same two queries with the merge moved behind the
-  // interface — and the interface would then owe callers a sort order it can't
-  // express in either table.
-  const { data: expenses } = useQuery(
-    (repo) => repo.listExpenses({ ...range, search: search.trim() || undefined }),
-    [range.from, range.to, search]
-  );
-
-  const { data: incomes } = useQuery(
-    (repo) => repo.listIncomes({ ...range, search: search.trim() || undefined }),
-    [range.from, range.to, search]
-  );
+  const expenses = activity?.expenses;
+  const incomes = activity?.incomes;
 
   const entries = useMemo<ActivityEntry[]>(() => {
     const merged: ActivityEntry[] = [
@@ -125,6 +127,23 @@ export default function ActivityScreen() {
               selected={period === 'period'}
               onPress={() => setPeriod('period')}
             />
+
+            {/* The way back from a long traversal. Stepping is one period at a
+                time by design — it's how you read a ledger — but that makes
+                "back to now" cost as many taps as you spent getting away from
+                it. Shown only while it has somewhere to go, so the present
+                never carries a control that would do nothing. */}
+            {!atPresent && (
+              <Animated.View
+                entering={FadeIn.duration(140)}
+                exiting={FadeOut.duration(140)}
+                style={styles.jumpToPresent}>
+                <Chip
+                  label={period === 'day' ? 'Today' : calendarMonths ? 'This month' : 'Now'}
+                  onPress={() => setAnchor(today())}
+                />
+              </Animated.View>
+            )}
           </View>
 
           <View style={styles.navRow}>
@@ -142,10 +161,16 @@ export default function ActivityScreen() {
               <ThemedText type="label">{periodLabel}</ThemedText>
               {/* "in" and "out" spelled out rather than signed, so the summary
                   doesn't need the same sign convention as the rows to be read
-                  correctly at a glance. */}
+                  correctly at a glance. Held back until the window has actually
+                  been read: an unfilled total is zero, and zero is a number the
+                  user would believe. */}
               <ThemedText type="label" themeColor="textSecondary">
-                {formatMoney(inMinor, preferences.currencyCode)} in ·{' '}
-                {formatMoney(outMinor, preferences.currencyCode)} out
+                {activity
+                  ? `${formatMoney(inMinor, preferences.currencyCode)} in · ${formatMoney(
+                      outMinor,
+                      preferences.currencyCode
+                    )} out`
+                  : '—'}
               </ThemedText>
             </View>
 
@@ -174,44 +199,103 @@ export default function ActivityScreen() {
           </View>
         </View>
 
-        <SectionList
-          sections={sections}
-          keyExtractor={(item) => `${item.kind}:${item.id}`}
-          contentContainerStyle={styles.list}
-          keyboardShouldPersistTaps="handled"
-          stickySectionHeadersEnabled={false}
-          renderSectionHeader={({ section }) => (
-            <View style={styles.sectionHeader}>
-              <ThemedText type="label" themeColor="textSecondary">
-                {formatDayLabel(section.dayKey)}
+        {/* Only when there is nothing at all to draw. A window being *refined*
+            — a search narrowing, a mutation refetching — keeps its rows. */}
+        {!activity ? (
+          <LedgerSkeleton />
+        ) : (
+          <SectionList
+            sections={sections}
+            keyExtractor={(item) => `${item.kind}:${item.id}`}
+            contentContainerStyle={styles.list}
+            keyboardShouldPersistTaps="handled"
+            stickySectionHeadersEnabled={false}
+            renderSectionHeader={({ section }) => (
+              <View style={styles.sectionHeader}>
+                <ThemedText type="label" themeColor="textSecondary">
+                  {formatDayLabel(section.dayKey)}
+                </ThemedText>
+                {/* The day's net, signed, because a day can now hold both
+                    directions and a bare total would hide one of them. */}
+                <ThemedText
+                  type="label"
+                  themeColor="textSecondary"
+                  style={[
+                    styles.sectionTotal,
+                    section.netMinor > 0 && { color: ChartInk[scheme].good },
+                  ]}>
+                  {section.netMinor > 0 ? '+' : section.netMinor < 0 ? '−' : ''}
+                  {formatMoney(Math.abs(section.netMinor), preferences.currencyCode)}
+                </ThemedText>
+              </View>
+            )}
+            renderItem={({ item }) => (
+              <ActivityRow entry={item} currencyCode={preferences.currencyCode} />
+            )}
+            ListEmptyComponent={
+              <ThemedText type="label" themeColor="textSecondary" style={styles.empty}>
+                {search.trim()
+                  ? `Nothing matching “${search.trim()}” in this period.`
+                  : 'Nothing logged in this period yet.'}
               </ThemedText>
-              {/* The day's net, signed, because a day can now hold both
-                  directions and a bare total would hide one of them. */}
-              <ThemedText
-                type="label"
-                themeColor="textSecondary"
-                style={[
-                  styles.sectionTotal,
-                  section.netMinor > 0 && { color: ChartInk[scheme].good },
-                ]}>
-                {section.netMinor > 0 ? '+' : section.netMinor < 0 ? '−' : ''}
-                {formatMoney(Math.abs(section.netMinor), preferences.currencyCode)}
-              </ThemedText>
-            </View>
-          )}
-          renderItem={({ item }) => (
-            <ActivityRow entry={item} currencyCode={preferences.currencyCode} />
-          )}
-          ListEmptyComponent={
-            <ThemedText type="label" themeColor="textSecondary" style={styles.empty}>
-              {search.trim()
-                ? `Nothing matching “${search.trim()}” in this period.`
-                : 'Nothing logged in this period yet.'}
-            </ThemedText>
-          }
-        />
+            }
+          />
+        )}
       </SafeAreaView>
     </ThemedView>
+  );
+}
+
+/**
+ * What the list shows on a genuine cache miss — the first visit to a window,
+ * or a traversal faster than the prefetch can keep up with.
+ *
+ * Rows rather than a spinner: the shape of what is coming is already known, and
+ * drawing it means the real rows land *into* the layout instead of pushing a
+ * centred spinner out of the way. The pulse is what separates "loading" from
+ * "these are your entries, greyed out" — without it, placeholder rows read as
+ * disabled content.
+ */
+function LedgerSkeleton() {
+  const theme = useTheme();
+  const pulse = useSharedValue(0.4);
+
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withTiming(0.85, { duration: 700, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true
+    );
+  }, [pulse]);
+
+  const style = useAnimatedStyle(() => ({ opacity: pulse.value }));
+
+  return (
+    <Animated.View style={[styles.list, style]} pointerEvents="none" accessibilityLabel="Loading">
+      {Array.from({ length: 6 }, (_, index) => (
+        <View key={index} style={styles.skeletonRow}>
+          <View style={[styles.skeletonDisc, { backgroundColor: theme.backgroundSelected }]} />
+          <View style={styles.skeletonText}>
+            {/* Widths alternate so the block reads as a list of unlike entries
+                rather than as a table someone forgot to fill in. */}
+            <View
+              style={[
+                styles.skeletonLine,
+                { backgroundColor: theme.backgroundSelected, width: index % 2 ? '52%' : '68%' },
+              ]}
+            />
+            <View
+              style={[
+                styles.skeletonLine,
+                styles.skeletonLineShort,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            />
+          </View>
+          <View style={[styles.skeletonAmount, { backgroundColor: theme.backgroundSelected }]} />
+        </View>
+      ))}
+    </Animated.View>
   );
 }
 
@@ -255,7 +339,11 @@ const styles = StyleSheet.create({
   },
   periodToggle: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.two,
+  },
+  jumpToPresent: {
+    marginLeft: 'auto',
   },
   navRow: {
     flexDirection: 'row',
@@ -296,6 +384,38 @@ const styles = StyleSheet.create({
   },
   sectionTotal: {
     fontVariant: ['tabular-nums'],
+  },
+  // Mirrors `row` in components/activity-row.tsx, so the real rows land where
+  // the placeholders were rather than an inch off.
+  skeletonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+  },
+  // The 34pt disc `GlyphDisc` defaults to, at the same third-of-its-size radius.
+  skeletonDisc: {
+    width: 34,
+    height: 34,
+    borderRadius: 34 / 3,
+  },
+  skeletonText: {
+    flex: 1,
+    gap: Spacing.one + 2,
+  },
+  skeletonLine: {
+    height: 11,
+    borderRadius: Spacing.one,
+  },
+  skeletonLineShort: {
+    width: '34%',
+    height: 9,
+  },
+  skeletonAmount: {
+    width: 62,
+    height: 11,
+    borderRadius: Spacing.one,
   },
   empty: {
     paddingTop: Spacing.five,

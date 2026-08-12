@@ -60,13 +60,39 @@ const SIGNED_OUT_REPOSITORY = new Proxy({} as Repository, {
  * immediately, and retrying quietly is better than making the user tap
  * anything for it.
  *
- * Used by both readers in this file — the cached slices in `load` and every
- * live `useQuery`. They have to agree: they run against the same token at the
- * same moment, so a policy that covers one and not the other shows up as a
- * screen where half the data arrived.
+ * Used by every reader in the app — the cached slices in `load`, every live
+ * `useQuery`, and the windowed reads in `useActivityWindow`. They have to
+ * agree: they run against the same token at the same moment, so a policy that
+ * covers one and not the other shows up as a screen where half the data
+ * arrived.
  */
 const LOAD_ATTEMPTS = 3;
 const LOAD_RETRY_DELAY_MS = 700;
+
+/**
+ * Run a read under the retry policy above, rethrowing once the attempts are
+ * spent.
+ *
+ * `cancelled` is checked before each sleep as well as after, so a screen that
+ * unmounted mid-flight stops here rather than holding the closure alive for
+ * another two seconds to answer a question nobody asked. It reports the
+ * cancellation by throwing, which callers already have to handle — they simply
+ * check their own flag before touching state.
+ */
+export async function readWithRetries<T>(
+  run: () => Promise<T>,
+  cancelled: () => boolean = () => false
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (cancelled() || attempt >= LOAD_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, LOAD_RETRY_DELAY_MS * attempt));
+      if (cancelled()) throw error;
+    }
+  }
+}
 
 interface DataContextValue {
   repo: Repository;
@@ -295,27 +321,16 @@ export function useQuery<T>(run: (repo: Repository) => Promise<T>, deps: Depende
       // `load` quietly recovers while every chart on the screen gives up. The
       // visible result was an empty donut next to a populated budget list, with
       // nothing to retry it until the next mutation happened to bump `revision`.
-      for (let attempt = 1; ; attempt += 1) {
-        try {
-          const result = await runRef.current(repo);
-          if (!cancelled) setState({ data: result, loading: false });
-          return;
-        } catch (error) {
-          // Checked before sleeping as well as after, so a screen that
-          // unmounted mid-flight stops here rather than holding the closure
-          // alive for another two seconds to answer a question nobody asked.
-          if (cancelled) return;
-
-          if (attempt < LOAD_ATTEMPTS) {
-            await new Promise((resolve) => setTimeout(resolve, LOAD_RETRY_DELAY_MS * attempt));
-            if (cancelled) return;
-            continue;
-          }
-
-          console.error('[budgetit] query failed', error);
-          setState((previous) => ({ ...previous, loading: false }));
-          return;
-        }
+      try {
+        const result = await readWithRetries(
+          () => runRef.current(repo),
+          () => cancelled
+        );
+        if (!cancelled) setState({ data: result, loading: false });
+      } catch (error) {
+        if (cancelled) return;
+        console.error('[budgetit] query failed', error);
+        setState((previous) => ({ ...previous, loading: false }));
       }
     })();
 

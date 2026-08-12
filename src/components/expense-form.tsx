@@ -19,15 +19,13 @@
 
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useState } from 'react';
-import {
-  Keyboard,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
-  type DimensionValue,
-} from 'react-native';
+import { Keyboard, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { Button } from '@/components/ui/button';
@@ -335,34 +333,17 @@ function BudgetDrain({
   const remaining = limit - projected;
   const over = projected > limit;
 
-  const spentWidth: DimensionValue = `${Math.min(100, percentOf(spentMinor, limit) * 100)}%`;
-  const pendingWidth: DimensionValue = `${Math.min(
-    100 - Math.min(100, percentOf(spentMinor, limit) * 100),
-    percentOf(pendingMinor, limit) * 100
-  )}%`;
-
   return (
     <View style={styles.drain}>
-      <View style={[styles.drainTrack, { backgroundColor: ink.track }]}>
-        <View
-          style={[
-            styles.drainFill,
-            { width: spentWidth, backgroundColor: over ? ink.critical : theme.accent },
-          ]}
-        />
-        {/* The pending segment is the same hue at half strength, so it reads as
-            "not yet real" without introducing a colour that means nothing. */}
-        <View
-          style={[
-            styles.drainFill,
-            {
-              width: pendingWidth,
-              backgroundColor: over ? ink.critical : theme.accent,
-              opacity: 0.45,
-            },
-          ]}
-        />
-      </View>
+      <DrainBar
+        spentRatio={Math.min(1, percentOf(spentMinor, limit))}
+        pendingRatio={Math.min(
+          1 - Math.min(1, percentOf(spentMinor, limit)),
+          percentOf(pendingMinor, limit)
+        )}
+        color={over ? ink.critical : theme.accent}
+        trackColor={ink.track}
+      />
 
       <View style={styles.drainLabels}>
         <ThemedText type="label" themeColor={over ? 'text' : 'textSecondary'} tabular>
@@ -377,6 +358,60 @@ function BudgetDrain({
     </View>
   );
 }
+
+/**
+ * The two-segment bar, animated.
+ *
+ * Widths are driven in pixels off the measured track rather than as percentage
+ * strings, because a percentage is resolved by the layout engine on the JS side
+ * — animating it would hand every frame back to the bridge, which is the one
+ * thing the fills can't afford while a digit-per-keystroke drives them.
+ *
+ * The easing is deliberately short and decelerating: the bar has to feel like a
+ * consequence of the keystroke that just landed, so it has to arrive before the
+ * next digit does. The colour is animated on the same clock, so crossing the
+ * limit reads as the bar turning rather than as a frame-perfect swap.
+ */
+function DrainBar({
+  spentRatio,
+  pendingRatio,
+  color,
+  trackColor,
+}: {
+  spentRatio: number;
+  pendingRatio: number;
+  color: string;
+  trackColor: string;
+}) {
+  const trackWidth = useSharedValue(0);
+
+  const spentStyle = useAnimatedStyle(() => ({
+    width: withTiming(trackWidth.value * spentRatio, TIMING),
+    backgroundColor: withTiming(color, TIMING),
+  }));
+
+  const pendingStyle = useAnimatedStyle(() => ({
+    width: withTiming(trackWidth.value * pendingRatio, TIMING),
+    backgroundColor: withTiming(color, TIMING),
+  }));
+
+  return (
+    <View
+      style={[styles.drainTrack, { backgroundColor: trackColor }]}
+      // Measured rather than assumed: the card is inset by the screen's
+      // padding, so the track's width is only known once it has been laid out.
+      onLayout={(event) => {
+        trackWidth.value = event.nativeEvent.layout.width;
+      }}>
+      <Animated.View style={[styles.drainFill, spentStyle]} />
+      {/* The pending segment is the same hue at half strength, so it reads as
+          "not yet real" without introducing a colour that means nothing. */}
+      <Animated.View style={[styles.drainFill, styles.drainPending, pendingStyle]} />
+    </View>
+  );
+}
+
+const TIMING = { duration: 260, easing: Easing.out(Easing.cubic) };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -435,6 +470,9 @@ const styles = StyleSheet.create({
   },
   drainFill: {
     height: 6,
+  },
+  drainPending: {
+    opacity: 0.45,
   },
   drainLabels: {
     flexDirection: 'row',
