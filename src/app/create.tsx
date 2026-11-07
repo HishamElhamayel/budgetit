@@ -1,10 +1,11 @@
 /**
  * The "what do you want to add?" sheet behind the `+` on Home.
  *
- * Exists because three creatable things — income, budget, category — is one too
- * many to hang off a single icon without asking. Each row states what the thing
- * *is*, not just its name, since budget-vs-category is exactly the distinction
- * new users get wrong.
+ * Exists because four creatable things — income, budget, goal, category — are
+ * too many to hang off a single icon without asking. Each row states what the
+ * thing *is*, not just its name, since budget-vs-category is exactly the
+ * distinction new users get wrong — and budget-vs-goal is the one they get
+ * wrong next, because both are pots and only one is money they intend to spend.
  */
 
 import { useRouter } from 'expo-router';
@@ -36,10 +37,16 @@ export default function CreateChooserScreen() {
       color: slotColor(0, scheme),
     },
     {
+      href: '/goal/new' as const,
+      title: 'Goal',
+      blurb: 'Something you’re saving up for. Money you put in is set aside, not spent.',
+      color: slotColor(1, scheme),
+    },
+    {
       href: '/category/new' as const,
       title: 'Category',
       blurb: 'What a purchase was for. Shared across every budget.',
-      color: slotColor(1, scheme),
+      color: slotColor(2, scheme),
     },
   ];
 

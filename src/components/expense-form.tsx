@@ -17,7 +17,6 @@
  * the expense is visible before it's even submitted.
  */
 
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { useState } from 'react';
 import { Keyboard, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import Animated, {
@@ -30,12 +29,14 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import DateTimePicker from '@/components/ui/date-time-picker';
 import { currencyDigits } from '@/constants/currencies';
 import { ChartInk, slotColor } from '@/constants/palette';
 import { FieldText, Radius, Spacing } from '@/constants/theme';
 import type { ExpenseInput } from '@/data/repository';
 import { useData, useQuery } from '@/data/store';
 import type { Budget, Category } from '@/db/types';
+import { useIsWide } from '@/hooks/use-is-wide';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import { addDays, formatDayLabel, fromDayKey, toDayKey, today } from '@/lib/date';
@@ -182,6 +183,8 @@ export function ExpenseForm({
           onChangeText={setDescription}
           placeholder="What was it for?"
           placeholderTextColor={theme.textMuted}
+          // Matches `expenses_description_length` in the input_bounds migration.
+          maxLength={500}
           style={[styles.descriptionInput, { color: theme.text }]}
           accessibilityLabel="Description"
         />
@@ -217,14 +220,14 @@ export function ExpenseForm({
       </Field>
 
       <Field label="Date">
-        {/* iOS has no dialog to dismiss: the compact picker is a field that
+        {/* iOS and web have no dialog to dismiss: the compact picker is a field that
             opens and closes its own overlay, so it sits in the row where the
             "pick a date" chip would be. It can't live in a ChipRow — iOS
             scrolls the native picker into view and drags the chips off the
             left edge — but two quick chips plus the picker fit without
             scrolling anyway. Android's picker *is* a dialog, so there the
             chip stays, opens it, and the row scrolls as before. */}
-        {Platform.OS === 'ios' ? (
+        {Platform.OS !== 'android' ? (
           <View style={styles.dateRow}>
             {dateChips.map((day) => (
               <Chip
@@ -424,7 +427,16 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/**
+ * A row of chips: one swipeable line on a phone, wrapped lines on a wide
+ * screen. A horizontal scroller is the right shape under a thumb and the wrong
+ * one under a mouse, where the hidden overflow can only be reached with a
+ * shift-scroll nobody knows to try.
+ */
 function ChipRow({ children }: { children: React.ReactNode }) {
+  const wide = useIsWide();
+  if (wide) return <View style={[styles.chipRow, styles.chipWrap]}>{children}</View>;
+
   return (
     <ScrollView
       horizontal
@@ -439,6 +451,10 @@ function ChipRow({ children }: { children: React.ReactNode }) {
 const styles = StyleSheet.create({
   container: {
     gap: Spacing.three,
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
   },
   hero: {
     flexDirection: 'row',
@@ -500,6 +516,10 @@ const styles = StyleSheet.create({
   },
   dateRow: {
     flexDirection: 'row',
+    // Wraps only where it has to: the browser's date field is wider than the
+    // native compact picker, and on a phone-width page it would otherwise run
+    // off the card's right edge.
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.two,
   },

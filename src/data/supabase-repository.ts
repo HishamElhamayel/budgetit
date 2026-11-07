@@ -33,14 +33,18 @@ import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import type {
   BudgetInput,
   CategoryInput,
+  ContributionInput,
+  ContributionQuery,
   DaySummary,
   ExpenseInput,
   ExpenseQuery,
+  GoalInput,
   IncomeInput,
   IncomeQuery,
   ProfileInput,
   Repository,
 } from '@/data/repository';
+import { DefaultGoalIcon } from '@/constants/icons';
 import { newId, nowIso } from '@/db/ids';
 import type {
   Budget,
@@ -48,8 +52,13 @@ import type {
   BudgetProgress,
   Category,
   CategoryTotal,
+  ContributionDetail,
+  ContributionDirection,
   Expense,
   ExpenseDetail,
+  Goal,
+  GoalContribution,
+  GoalProgress,
   Income,
   IncomeDetail,
   MonthFlow,
@@ -146,11 +155,55 @@ interface IncomeDetailRow extends IncomeRow {
   budget: BudgetEmbed | null;
 }
 
+interface GoalRow {
+  id: string;
+  user_id: string;
+  name: string;
+  target_minor: number | string | null;
+  target_day: string | null;
+  icon: string;
+  color_slot: number;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+/** An embedded goal, as returned by the `goal:goals(...)` select. */
+interface GoalEmbed {
+  name: string;
+  icon: string;
+  color_slot: number;
+}
+
+interface ContributionRow {
+  id: string;
+  user_id: string;
+  goal_id: string;
+  amount_minor: number | string;
+  direction: string;
+  note: string | null;
+  moved_on: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface ContributionDetailRow extends ContributionRow {
+  goal: GoalEmbed | null;
+}
+
 /** The one row returned by the `month_flow` RPC. */
 interface MonthFlowRow {
   opening_minor: number | string;
   in_minor: number | string;
   out_minor: number | string;
+  /**
+   * Optional: absent until the savings_goals migration replaces the function.
+   * Coerced to 0 by {@link minor} rather than trusted, so a client running
+   * ahead of its database reports "nothing set aside" instead of `NaN`.
+   */
+  saved_minor?: number | string;
 }
 
 interface ProfileRow {
@@ -168,6 +221,8 @@ const EXPENSE_DETAIL_SELECT =
   '*, budget:budgets(name, color_slot), category:categories(name, icon, color_slot)';
 
 const INCOME_DETAIL_SELECT = '*, budget:budgets(name, color_slot)';
+
+const CONTRIBUTION_DETAIL_SELECT = '*, goal:goals(name, icon, color_slot)';
 
 // The donut needs the category's display fields alongside each amount, but none
 // of the expense's own columns beyond the grouping key.
@@ -283,6 +338,102 @@ function toIncomeDetail(row: IncomeDetailRow): IncomeDetail {
   };
 }
 
+function toGoal(row: GoalRow): Goal {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    targetMinor: nullableMinor(row.target_minor),
+    targetDay: row.target_day,
+    icon: row.icon,
+    colorSlot: row.color_slot,
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function toContribution(row: ContributionRow): GoalContribution {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    goalId: row.goal_id,
+    amountMinor: minor(row.amount_minor),
+    // Narrowed rather than validated: the column carries a check constraint, so
+    // anything else came back from a database this build doesn't match.
+    direction: row.direction as ContributionDirection,
+    note: row.note,
+    movedOn: row.moved_on,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function toContributionDetail(row: ContributionDetailRow): ContributionDetail {
+  return {
+    ...toContribution(row),
+    // The goal is NOT NULL and foreign-keyed, so the embed is only ever absent
+    // if the select was changed. Falling back beats crashing a list — the same
+    // reasoning as `toExpenseDetail`.
+    goalName: row.goal?.name ?? '',
+    goalIcon: row.goal?.icon ?? DefaultGoalIcon,
+    goalColorSlot: row.goal?.color_slot ?? 0,
+  };
+}
+
+/**
+ * Turn a PostgREST error into something worth showing a person.
+ *
+ * These messages reach the screen. `LoadErrorScreen` in src/app/_layout.tsx
+ * renders `loadError.message` directly, which used to mean a user staring at
+ * `new row for relation "budgets" violates check constraint
+ * "budgets_name_length"` — a sentence naming a constraint, a relation and
+ * nothing they can act on.
+ *
+ * The raw error is not discarded, it moves to `cause`, which is what the
+ * `console.error` calls in store.tsx log. So the detail is still there for
+ * whoever is debugging and gone from the place where it only confuses.
+ *
+ * The same shape as `describe` in data/auth.tsx, and for the same reason: only
+ * the cases where the raw text is actively unhelpful get rewritten, and the
+ * default stays deliberately vague rather than inventing a diagnosis.
+ */
+function describeDbError(error: PostgrestError): string {
+  switch (error.code) {
+    // A check constraint — a name or description past the length the column
+    // holds, or an amount outside its range. See the input_bounds migration.
+    case '23514':
+      return 'That value is outside the range we can store. Try a shorter one.';
+    case '23505':
+      return 'That already exists.';
+    // A foreign key: the budget or category being pointed at is gone, or
+    // belongs to somebody else.
+    case '23503':
+      return "That refers to something that isn't there any more.";
+    case '23502':
+      return 'Something required was missing. Check the form and try again.';
+    // RLS refused the row. Reachable in normal use when a session expires
+    // mid-write, which is why it is worded as a session problem.
+    case '42501':
+      return 'You do not have access to that. Try signing in again.';
+    case 'PGRST301':
+      return 'Your session expired. Sign in again.';
+    default:
+      return 'Something went wrong reaching the server.';
+  }
+}
+
+/**
+ * Wrap a PostgREST error as a thrown one, with copy fit for a screen.
+ *
+ * Every throw site in this file goes through here so none of them can forget.
+ */
+function fail(error: PostgrestError): Error {
+  return new Error(describeDbError(error), { cause: error });
+}
+
 /**
  * Unwrap a PostgREST response, turning its error channel into a thrown one.
  *
@@ -291,12 +442,26 @@ function toIncomeDetail(row: IncomeDetailRow): IncomeDetail {
  * `{ data, error }` all the way up would push that branch into every screen.
  */
 function unwrap<T>(result: { data: T | null; error: PostgrestError | null }): T {
-  if (result.error) {
-    throw new Error(`[supabase] ${result.error.message}`, { cause: result.error });
-  }
+  if (result.error) throw fail(result.error);
   // A non-error response with no data only happens on `maybeSingle`, whose
   // callers here handle null themselves before reaching this.
   return result.data as T;
+}
+
+/**
+ * Escape the wildcards in a `like` pattern so a search means what was typed.
+ *
+ * `%` and `_` are pattern syntax, so searching for "50%" currently matches
+ * anything starting "50" and a search of "%_%_%_%" is a request for a lot of
+ * backtracking over the caller's own rows. Neither is an injection — supabase-js
+ * puts this value through URLSearchParams, which percent-encodes the characters
+ * that would be needed to break out of the filter expression — they are just
+ * wrong answers, and a needlessly expensive way to get them.
+ *
+ * Backslash first, or the escapes get escaped.
+ */
+function likeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
 export function createSupabaseRepository(client: SupabaseClient, userId: string): Repository {
@@ -323,13 +488,13 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
     if (query.categoryId) builder = builder.eq('category_id', query.categoryId);
 
     const search = query.search?.trim();
-    if (search) builder = builder.ilike('description', `%${search}%`);
+    if (search) builder = builder.ilike('description', `%${likeLiteral(search)}%`);
 
     return builder;
   }
 
   /** Next free `sort_order`, the equivalent of `MAX(sort_order) + 1`. */
-  async function nextSortOrder(table: 'budgets' | 'categories'): Promise<number> {
+  async function nextSortOrder(table: 'budgets' | 'categories' | 'goals'): Promise<number> {
     const { data, error } = await client
       .from(table)
       .select('sort_order')
@@ -338,7 +503,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       .limit(1)
       .maybeSingle();
 
-    if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+    if (error) throw fail(error);
     return data ? data.sort_order + 1 : 0;
   }
 
@@ -349,7 +514,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
   }
 
   async function softDelete(
-    table: 'budgets' | 'categories' | 'expenses' | 'incomes',
+    table: 'budgets' | 'categories' | 'expenses' | 'incomes' | 'goal_contributions',
     id: string
   ): Promise<void> {
     const timestamp = nowIso();
@@ -357,7 +522,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       .from(table)
       .update({ deleted_at: timestamp, updated_at: timestamp })
       .eq('id', id);
-    if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+    if (error) throw fail(error);
   }
 
   async function listBudgets(): Promise<Budget[]> {
@@ -445,9 +610,90 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
     });
   }
 
+  async function listGoals(): Promise<Goal[]> {
+    const rows = unwrap(
+      await client
+        .from('goals')
+        .select('*')
+        .is('deleted_at', null)
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .returns<GoalRow[]>()
+    );
+    return rows.map(toGoal);
+  }
+
+  /**
+   * Start a contribution read with the shared filters applied — the goals'
+   * equivalent of `expenseQuery`, and there for the same reason: the ledger
+   * window and a single goal's running total must agree on what counts as in
+   * range.
+   */
+  function contributionQuery(select: string, query: ContributionQuery) {
+    let builder = client.from('goal_contributions').select(select).is('deleted_at', null);
+
+    if (query.from) builder = builder.gte('moved_on', query.from);
+    if (query.to) builder = builder.lte('moved_on', query.to);
+    if (query.goalId) builder = builder.eq('goal_id', query.goalId);
+
+    const search = query.search?.trim();
+    if (search) builder = builder.ilike('note', `%${likeLiteral(search)}%`);
+
+    return builder;
+  }
+
+  async function goalProgress(onDay: string): Promise<GoalProgress[]> {
+    const goals = await listGoals();
+    if (goals.length === 0) return [];
+
+    // Every contribution up to the day asked for, in one read, split up here —
+    // the same shape as `budgetProgress` and for the same reason: one round
+    // trip beats one per goal over a network.
+    //
+    // Unbounded below on purpose. A goal's progress is cumulative, so there is
+    // no "from" to clip at, which does put this read on the same road to
+    // PostgREST's row cap that pushed `monthFlow` into an RPC. It is a much
+    // longer road — a contribution is a deliberate act, so these are tens of
+    // rows a year where expenses are thousands — and this one degrades
+    // honestly if it is ever reached, which is the difference that decides it:
+    // a truncated page here understates a goal visibly, next to a target the
+    // user knows.
+    const rows = unwrap(
+      await client
+        .from('goal_contributions')
+        .select('goal_id, amount_minor, direction')
+        .is('deleted_at', null)
+        .lte('moved_on', onDay)
+        .returns<Pick<ContributionRow, 'goal_id' | 'amount_minor' | 'direction'>[]>()
+    );
+
+    return goals.map((goal) => {
+      const savedMinor = rows.reduce(
+        (sum, row) =>
+          row.goal_id === goal.id
+            ? sum + (row.direction === 'in' ? minor(row.amount_minor) : -minor(row.amount_minor))
+            : sum,
+        0
+      );
+
+      return {
+        goal,
+        // Floored at zero. Withdrawing more than a goal holds is arithmetic the
+        // database permits and no screen can draw — a negative bar has nowhere
+        // to go — and the pool has already been credited correctly either way.
+        savedMinor: Math.max(0, savedMinor),
+        remainingMinor:
+          goal.targetMinor === null ? null : Math.max(0, goal.targetMinor - savedMinor),
+        daysLeft: goal.targetDay === null ? null : daysBetween(onDay, goal.targetDay),
+      };
+    });
+  }
+
   return {
     listBudgets,
     budgetProgress,
+    listGoals,
+    goalProgress,
 
     async createBudget(input: BudgetInput) {
       const timestamp = nowIso();
@@ -486,7 +732,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
           })
         )
         .eq('id', id);
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     async deleteBudget(id) {
@@ -534,7 +780,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
         .from('categories')
         .update(patch({ name: input.name, icon: input.icon, color_slot: input.colorSlot }))
         .eq('id', id);
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     async deleteCategory(id) {
@@ -549,7 +795,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
         .is('deleted_at', null)
         .maybeSingle<ExpenseDetailRow>();
 
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
       return data ? toExpenseDetail(data) : null;
     },
 
@@ -610,7 +856,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
           })
         )
         .eq('id', id);
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     async deleteExpense(id) {
@@ -625,7 +871,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
         .is('deleted_at', null)
         .maybeSingle<IncomeDetailRow>();
 
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
       return data ? toIncomeDetail(data) : null;
     },
 
@@ -636,7 +882,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       if (query.budgetId) builder = builder.eq('budget_id', query.budgetId);
 
       const search = query.search?.trim();
-      if (search) builder = builder.ilike('source', `%${search}%`);
+      if (search) builder = builder.ilike('source', `%${likeLiteral(search)}%`);
 
       const rows = unwrap(
         await builder
@@ -691,11 +937,120 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
           })
         )
         .eq('id', id);
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     async deleteIncome(id) {
       await softDelete('incomes', id);
+    },
+
+    async createGoal(input: GoalInput) {
+      const timestamp = nowIso();
+      const row = {
+        id: newId(),
+        user_id: userId,
+        name: input.name,
+        target_minor: input.targetMinor,
+        target_day: input.targetDay,
+        icon: input.icon,
+        color_slot: input.colorSlot,
+        sort_order: await nextSortOrder('goals'),
+        created_at: timestamp,
+        updated_at: timestamp,
+      };
+
+      const created = unwrap(await client.from('goals').insert(row).select('*').single<GoalRow>());
+      return toGoal(created);
+    },
+
+    async updateGoal(id, input) {
+      const { error } = await client
+        .from('goals')
+        .update(
+          patch({
+            name: input.name,
+            target_minor: input.targetMinor,
+            target_day: input.targetDay,
+            icon: input.icon,
+            color_slot: input.colorSlot,
+          })
+        )
+        .eq('id', id);
+      if (error) throw fail(error);
+    },
+
+    async deleteGoal(id) {
+      // A single RPC, not a soft delete, because two tables have to be
+      // tombstoned together: the goal and every contribution to it. Done from
+      // here it would be two round trips, and a failure between them would
+      // leave the money set aside for a goal that no longer exists — short in
+      // the pool, with nothing on screen to attribute it to. See `delete_goal`
+      // in the savings_goals migration for why the money comes back at all.
+      const { error } = await client.rpc('delete_goal', { goal: id });
+      if (error) throw fail(error);
+    },
+
+    async getContribution(id) {
+      const { data, error } = await client
+        .from('goal_contributions')
+        .select(CONTRIBUTION_DETAIL_SELECT)
+        .eq('id', id)
+        .is('deleted_at', null)
+        .maybeSingle<ContributionDetailRow>();
+
+      if (error) throw fail(error);
+      return data ? toContributionDetail(data) : null;
+    },
+
+    async listContributions(query) {
+      const rows = unwrap(
+        await contributionQuery(CONTRIBUTION_DETAIL_SELECT, query)
+          .order('moved_on', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(query.limit ?? DEFAULT_LIMIT)
+          .returns<ContributionDetailRow[]>()
+      );
+      return rows.map(toContributionDetail);
+    },
+
+    async createContribution(input: ContributionInput) {
+      const timestamp = nowIso();
+      const row = {
+        id: newId(),
+        user_id: userId,
+        goal_id: input.goalId,
+        amount_minor: input.amountMinor,
+        direction: input.direction,
+        note: input.note,
+        moved_on: input.movedOn,
+        created_at: timestamp,
+        updated_at: timestamp,
+      };
+
+      const created = unwrap(
+        await client.from('goal_contributions').insert(row).select('*').single<ContributionRow>()
+      );
+      return toContribution(created);
+    },
+
+    async updateContribution(id, input) {
+      const { error } = await client
+        .from('goal_contributions')
+        .update(
+          patch({
+            goal_id: input.goalId,
+            amount_minor: input.amountMinor,
+            direction: input.direction,
+            note: input.note,
+            moved_on: input.movedOn,
+          })
+        )
+        .eq('id', id);
+      if (error) throw fail(error);
+    },
+
+    async deleteContribution(id) {
+      await softDelete('goal_contributions', id);
     },
 
     async monthFlow(from, to): Promise<MonthFlow> {
@@ -711,13 +1066,21 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       const openingMinor = minor(row.opening_minor);
       const inMinor = minor(row.in_minor);
       const outMinor = minor(row.out_minor);
+      const savedMinor = minor(row.saved_minor);
 
       return {
         inMinor,
         outMinor,
+        // Savings stay out of `net`, which answers "did this period pay for
+        // itself". Money moved into a goal is still the user's; counting it as
+        // a shortfall would report a bad month for saving one.
         netMinor: inMinor - outMinor,
+        savedMinor,
         openingMinor,
-        availableMinor: openingMinor + inMinor - outMinor,
+        // Savings *are* subtracted here, because this one answers "how much can
+        // I spend" — and money in the car fund is money the user has already
+        // decided they cannot.
+        availableMinor: openingMinor + inMinor - outMinor - savedMinor,
       };
     },
 
@@ -783,7 +1146,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
         .limit(1)
         .maybeSingle<{ category_id: string }>();
 
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
       return data?.category_id ?? null;
     },
 
@@ -826,7 +1189,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       // already limits the table to one visible row, and `maybeSingle` would
       // complain loudly if that ever stopped being true.
       const { data, error } = await client.from('profiles').select('*').maybeSingle<ProfileRow>();
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
       if (data) return toProfile(data);
 
       // The signup trigger creates this row, so getting here means it didn't
@@ -855,7 +1218,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
           })
         )
         .eq('user_id', userId);
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     getPreferences,
@@ -877,7 +1240,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       const { error } = await client
         .from('preferences')
         .upsert(rows, { onConflict: 'user_id,key' });
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
 
     async resetAllData() {
@@ -885,7 +1248,7 @@ export function createSupabaseRepository(client: SupabaseClient, userId: string)
       // client-side would be six round trips with no way to roll back a failure
       // halfway through. See `reset_all_data` in the initial migration.
       const { error } = await client.rpc('reset_all_data');
-      if (error) throw new Error(`[supabase] ${error.message}`, { cause: error });
+      if (error) throw fail(error);
     },
   };
 }

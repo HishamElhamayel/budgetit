@@ -6,7 +6,6 @@
  * shouldn't be forced into a bucket just to be recorded.
  */
 
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -15,6 +14,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import DateTimePicker from '@/components/ui/date-time-picker';
 import { slotColor } from '@/constants/palette';
 import { FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useData, useQuery } from '@/data/store';
@@ -132,6 +132,8 @@ function IncomeForm({
               onChangeText={setSource}
               placeholder="Salary, refund, side project…"
               placeholderTextColor={theme.textSecondary}
+              // Matches `incomes_source_length` in the input_bounds migration.
+              maxLength={200}
               style={[styles.input, { color: theme.text }]}
               accessibilityLabel="Income source"
             />
@@ -167,11 +169,11 @@ function IncomeForm({
                 onPress={() => setReceivedOn(day)}
               />
             ))}
-            {/* iOS has no dialog to dismiss: the compact picker is a field
+            {/* iOS and web have no dialog to dismiss: the compact picker is a field
                 that opens and closes its own overlay, so it sits in the row
                 where the "pick a date" chip would be. Android's picker *is* a
                 dialog, so there the chip stays and opens it. */}
-            {Platform.OS === 'ios' ? (
+            {Platform.OS !== 'android' ? (
               <DateTimePicker
                 value={fromDayKey(receivedOn)}
                 mode="date"

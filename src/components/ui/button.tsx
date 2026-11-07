@@ -8,6 +8,9 @@ import { useTheme } from '@/hooks/use-theme';
 
 type Variant = 'primary' | 'secondary' | 'danger';
 
+/** Pressable's state on web, where react-native-web adds hover and focus. */
+type PressableState = { pressed: boolean; hovered?: boolean; focused?: boolean };
+
 /**
  * One button, three jobs.
  *
@@ -35,15 +38,29 @@ export function Button({
   const scheme = useScheme();
   const inactive = disabled || busy;
 
-  const surface =
-    variant === 'primary'
+  // A disabled primary goes grey rather than fading. Dark ink on an orange at
+  // 40% opacity is a muddy brown that still reads as "press me"; a flat
+  // neutral says the button exists and isn't ready. Busy keeps its orange —
+  // the press was accepted and the spinner is the answer.
+  const dormant = disabled && !busy;
+
+  const surface = dormant
+    ? variant === 'danger'
+      ? 'transparent'
+      : theme.backgroundSelected
+    : variant === 'primary'
       ? theme.accent
       : variant === 'secondary'
         ? theme.backgroundElement
         : 'transparent';
 
-  const ink =
-    variant === 'primary' ? '#FFFFFF' : variant === 'danger' ? ChartInk[scheme].critical : theme.text;
+  const ink = dormant
+    ? theme.textMuted
+    : variant === 'primary'
+      ? theme.onAccent
+      : variant === 'danger'
+        ? ChartInk[scheme].critical
+        : theme.text;
 
   return (
     <Pressable
@@ -51,13 +68,14 @@ export function Button({
       disabled={inactive}
       accessibilityRole="button"
       accessibilityState={{ disabled: inactive, busy }}
-      style={({ pressed }) => [
+      style={({ pressed, hovered, focused }: PressableState) => [
         styles.button,
         {
           backgroundColor: surface,
           borderColor: variant === 'secondary' ? theme.border : 'transparent',
-          opacity: inactive ? 0.4 : pressed ? 0.85 : 1,
+          opacity: inactive ? 1 : pressed ? 0.85 : hovered ? 0.92 : 1,
         },
+        focused && { outlineColor: theme.text, ...styles.focusRing },
         style,
       ]}>
       {busy ? (
@@ -83,4 +101,9 @@ const styles = StyleSheet.create({
   label: {
     fontWeight: '600',
   },
+  focusRing: {
+    outlineStyle: 'solid',
+    outlineWidth: 2,
+    outlineOffset: 2,
+  } as object,
 });

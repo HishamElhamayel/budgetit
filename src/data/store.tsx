@@ -31,7 +31,7 @@ import {
 import { useAuth } from '@/data/auth';
 import type { Repository } from '@/data/repository';
 import { createSupabaseRepository, DEFAULT_PREFERENCES } from '@/data/supabase-repository';
-import type { Budget, Category, Preferences, Profile } from '@/db/types';
+import type { Budget, Category, Goal, Preferences, Profile } from '@/db/types';
 import { supabase } from '@/lib/supabase';
 
 /**
@@ -102,6 +102,7 @@ interface DataContextValue {
   /** Cached because nearly every screen needs them and they change rarely. */
   budgets: Budget[];
   categories: Category[];
+  goals: Goal[];
   preferences: Preferences;
   /**
    * Null only while signed out or mid-load. Every gated screen renders behind
@@ -138,10 +139,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [revision, setRevision] = useState(0);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [preferences, setPreferences] = useState<Preferences>(DEFAULT_PREFERENCES);
   const [profile, setProfile] = useState<Profile | null>(null);
   /**
-   * Which account the three slices above were last filled from, or `null` for
+   * Which account the cached slices above were last filled from, or `null` for
    * "filled from nobody" — the signed-out defaults.
    *
    * Recorded rather than kept as a plain `ready` boolean because a boolean can
@@ -171,6 +173,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     if (!userId) {
       setBudgets([]);
       setCategories([]);
+      setGoals([]);
       setPreferences(DEFAULT_PREFERENCES);
       setProfile(null);
       setLoadedFor({ userId: null });
@@ -180,15 +183,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
     for (let attempt = 1; ; attempt += 1) {
       try {
-        const [nextBudgets, nextCategories, nextPreferences, nextProfile] = await Promise.all([
-          repo.listBudgets(),
-          repo.listCategories(),
-          repo.getPreferences(),
-          repo.getProfile(),
-        ]);
+        const [nextBudgets, nextCategories, nextGoals, nextPreferences, nextProfile] =
+          await Promise.all([
+            repo.listBudgets(),
+            repo.listCategories(),
+            repo.listGoals(),
+            repo.getPreferences(),
+            repo.getProfile(),
+          ]);
 
         setBudgets(nextBudgets);
         setCategories(nextCategories);
+        setGoals(nextGoals);
         setPreferences(nextPreferences);
         setProfile(nextProfile);
         setLoadedFor({ userId });
@@ -260,13 +266,26 @@ export function DataProvider({ children }: { children: ReactNode }) {
       mutate,
       budgets,
       categories,
+      goals,
       preferences,
       profile,
       ready,
       loadError,
       reload,
     }),
-    [repo, revision, mutate, budgets, categories, preferences, profile, ready, loadError, reload]
+    [
+      repo,
+      revision,
+      mutate,
+      budgets,
+      categories,
+      goals,
+      preferences,
+      profile,
+      ready,
+      loadError,
+      reload,
+    ]
   );
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

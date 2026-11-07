@@ -94,6 +94,8 @@ export default function CategoryScreen() {
               placeholder="Coffee"
               placeholderTextColor={theme.textSecondary}
               autoFocus={isNew}
+              // Matches `categories_name_length` in the input_bounds migration.
+              maxLength={80}
               style={[styles.input, { color: theme.text }]}
               accessibilityLabel="Category name"
             />

@@ -27,17 +27,20 @@ export function BudgetTabStrip({
   budgets,
   selectedId,
   onSelect,
+  inset = true,
 }: {
   budgets: Budget[];
   selectedId: string | null;
   onSelect: (budgetId: string | null) => void;
+  /** False where the parent already pads the column, as on wide Home. */
+  inset?: boolean;
 }) {
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
-      contentContainerStyle={styles.container}>
+      contentContainerStyle={[styles.container, !inset && styles.flush]}>
       <Tab label="All" selected={selectedId === ALL_BUDGETS} onPress={() => onSelect(ALL_BUDGETS)} />
 
       {budgets.map((budget) => (
@@ -84,6 +87,9 @@ const styles = StyleSheet.create({
     gap: Spacing.four,
     paddingHorizontal: Spacing.four,
     alignItems: 'flex-end',
+  },
+  flush: {
+    paddingHorizontal: 0,
   },
   tab: {
     gap: Spacing.two,

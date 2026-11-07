@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npx --yes pnpm@12.9.1 install --frozen-lockfile",
+  "buildCommand": "expo export --platform web && cp \"dist/+not-found.html\" dist/404.html",
+  "outputDirectory": "dist",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/budget/:id", "destination": "/budget/[id]" },
+    { "source": "/category/:id", "destination": "/category/[id]" },
+    { "source": "/contribution/:id", "destination": "/contribution/[id]" },
+    { "source": "/expense/:id", "destination": "/expense/[id]" },
+    { "source": "/goal/:id", "destination": "/goal/[id]" },
+    { "source": "/income/:id", "destination": "/income/[id]" }
+  ]
+}

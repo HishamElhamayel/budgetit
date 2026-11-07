@@ -96,6 +96,85 @@ export interface IncomeDetail extends Income {
 }
 
 /**
+ * Something the user is saving up for.
+ *
+ * The mirror image of a {@link Budget}: an envelope money goes *into* rather
+ * than one it comes out of. Money moved into a goal leaves the spendable pool
+ * without being spent, which is the distinction the whole feature exists to
+ * keep — a car fund is not an expense, and a budget called "Savings" with
+ * expenses logged against it says it is.
+ *
+ * Unlike a budget it carries an icon. A budget is an abstraction the user
+ * invented ("Personal"); a goal is a thing, and a thing has a picture.
+ */
+export interface Goal extends SyncFields {
+  id: string;
+  name: string;
+  /**
+   * Minor units. Null means "save towards this, but there's no finish line" —
+   * the reserve pot with no natural number attached. Offered for the same
+   * reason {@link Budget.limitMinor} is optional: a target invented to satisfy
+   * a required field is one the progress bar then lies about.
+   */
+  targetMinor: number | null;
+  /** Local calendar day the user wants it by, `YYYY-MM-DD`, or null. */
+  targetDay: string | null;
+  /** SF Symbol / Material Symbol key, as on {@link Category.icon}. */
+  icon: string;
+  colorSlot: number;
+  sortOrder: number;
+}
+
+/**
+ * One movement of money between the spendable pool and a goal.
+ *
+ * `direction` is carried explicitly rather than as the sign of `amountMinor`,
+ * for the reason `MonthFlow` already does it that way: a zero-amount row still
+ * has to land in the right bucket, and a non-negative amount stays enforceable
+ * as a database constraint rather than as a rule only the client remembers.
+ *
+ * It is named from the *goal's* point of view — `in` fills the goal and empties
+ * the pool — because that is the direction the user is thinking in when they
+ * tap "Add money".
+ */
+export interface GoalContribution extends SyncFields {
+  id: string;
+  goalId: string;
+  amountMinor: number;
+  direction: ContributionDirection;
+  /** Free text: "bonus", "changed my mind". Searched in Activity. */
+  note: string | null;
+  /** Local calendar day, `YYYY-MM-DD`. */
+  movedOn: string;
+}
+
+export type ContributionDirection = 'in' | 'out';
+
+/** A contribution joined with the display fields of its goal. */
+export interface ContributionDetail extends GoalContribution {
+  goalName: string;
+  goalIcon: string;
+  goalColorSlot: number;
+}
+
+/**
+ * How far along a goal is, as of a given day.
+ *
+ * Cumulative rather than per-period — a goal's progress is the whole history of
+ * what went into it — but still asked *as of* a day, so stepping Home's window
+ * back shows what the goal held then rather than what it holds now.
+ */
+export interface GoalProgress {
+  goal: Goal;
+  /** Net of every contribution up to the day asked for. Never negative. */
+  savedMinor: number;
+  /** `targetMinor - savedMinor`, or null when the goal has no target. */
+  remainingMinor: number | null;
+  /** Days from the day asked for to `targetDay`. Negative once overdue. */
+  daysLeft: number | null;
+}
+
+/**
  * Money in vs money out over a period, and the balance carried into it.
  *
  * `netMinor` answers "did this month pay for itself"; `availableMinor` answers
@@ -112,12 +191,25 @@ export interface MonthFlow {
   outMinor: number;
   netMinor: number;
   /**
+   * Net moved into savings goals during the period. Negative when more came
+   * back out than went in, which is what buying the thing looks like.
+   *
+   * Deliberately its own figure rather than folded into `outMinor`: a month
+   * where money went into the car fund and the same amount went on rent has
+   * exactly one number the user should feel bad about.
+   */
+  savedMinor: number;
+  /**
    * Everything earned before the period less everything spent before it.
    * Negative when past months were overspent — a deficit rolls forward for the
    * same reason a surplus does.
    */
   openingMinor: number;
-  /** `openingMinor + inMinor - outMinor`. The running balance. */
+  /**
+   * `openingMinor + inMinor - outMinor - savedMinor`. The running balance, and
+   * specifically the *spendable* one — money sitting in a goal is money the
+   * user has decided they do not have.
+   */
   availableMinor: number;
 }
 
@@ -131,18 +223,25 @@ export interface ExpenseDetail extends Expense {
 }
 
 /**
- * One line in the ledger — money out or money in.
+ * One line in the ledger — money out, money in, or money set aside.
  *
- * A tagged union rather than a common base type, because the two halves
+ * A tagged union rather than a common base type, because the three arms
  * genuinely differ in ways a list has to care about: an expense always belongs
- * to a budget and may name a category, income does neither, and their day
- * fields are `spentOn` and `receivedOn`. Flattening those into shared nullable
- * columns would let a row render as an expense with no budget, which is a state
- * the database cannot produce. Narrowing on `kind` keeps that impossible.
+ * to a budget and may name a category, income does neither, a contribution
+ * belongs to a goal and to nothing else, and their day fields are `spentOn`,
+ * `receivedOn` and `movedOn`. Flattening those into shared nullable columns
+ * would let a row render as an expense with no budget, which is a state the
+ * database cannot produce. Narrowing on `kind` keeps that impossible.
+ *
+ * Contributions belong here even though nothing was spent. The ledger answers
+ * "what happened to my money", and money leaving the spendable pool for a goal
+ * is half that answer — without a row for it, Home's "Left" drops by £200 with
+ * nothing anywhere to say why.
  */
 export type ActivityEntry =
   | ({ kind: 'expense' } & ExpenseDetail)
-  | ({ kind: 'income' } & IncomeDetail);
+  | ({ kind: 'income' } & IncomeDetail)
+  | ({ kind: 'contribution' } & ContributionDetail);
 
 /** One slice of the "where did it go" donut. */
 export interface CategoryTotal {

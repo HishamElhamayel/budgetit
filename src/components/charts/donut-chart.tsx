@@ -131,7 +131,7 @@ function shareLabel(value: number, total: number): string {
 function centerType(text: string, width: number): 'title' | 'heading' | 'body' {
   // Average glyph advance as a fraction of font size, for a tabular sans.
   const fits = (fontSize: number) => text.length * fontSize * 0.58 <= width;
-  if (fits(28)) return 'title';
+  if (fits(30)) return 'title';
   if (fits(19)) return 'heading';
   return 'body';
 }

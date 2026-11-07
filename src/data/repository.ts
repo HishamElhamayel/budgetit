@@ -15,8 +15,13 @@ import type {
   BudgetProgress,
   Category,
   CategoryTotal,
+  ContributionDetail,
+  ContributionDirection,
   Expense,
   ExpenseDetail,
+  Goal,
+  GoalContribution,
+  GoalProgress,
   Income,
   IncomeDetail,
   MonthFlow,
@@ -66,6 +71,25 @@ export interface IncomeInput {
   receivedOn: string;
 }
 
+export interface GoalInput {
+  name: string;
+  /** 1 to whatever, or null for "no finish line". */
+  targetMinor: number | null;
+  /** `YYYY-MM-DD`, or null for "no date in mind". */
+  targetDay: string | null;
+  icon: string;
+  colorSlot: number;
+}
+
+export interface ContributionInput {
+  goalId: string;
+  amountMinor: number;
+  /** `in` fills the goal from the pool; `out` gives the money back. */
+  direction: ContributionDirection;
+  note: string | null;
+  movedOn: string;
+}
+
 /**
  * The editable half of a profile. Email and password are absent on purpose —
  * they live in `auth.users`, not in a table this repository can reach, and they
@@ -86,6 +110,15 @@ export interface IncomeQuery {
    * Case-insensitive substring match on the source — income's counterpart to
    * an expense's description, so one search box over the ledger can hit both.
    */
+  search?: string;
+  limit?: number;
+}
+
+export interface ContributionQuery {
+  from?: string;
+  to?: string;
+  goalId?: string;
+  /** Case-insensitive substring match on the note, the free-text field here. */
   search?: string;
   limit?: number;
 }
@@ -122,9 +155,38 @@ export interface Repository {
   updateIncome(id: string, input: Partial<IncomeInput>): Promise<void>;
   deleteIncome(id: string): Promise<void>;
 
+  listGoals(): Promise<Goal[]>;
+  createGoal(input: GoalInput): Promise<Goal>;
+  updateGoal(id: string, input: Partial<GoalInput>): Promise<void>;
   /**
-   * Money in, money out and the difference over an inclusive day range, plus
-   * the balance carried in from everything before `from`.
+   * Tombstone a goal *and* every contribution to it, releasing the money back
+   * into the spendable pool.
+   *
+   * The opposite of {@link Repository.deleteBudget}, which keeps its expenses.
+   * That money is gone and the history has to stand; money in a goal is only
+   * earmarked, and withdrawing the earmark is the entire meaning of deleting
+   * one. Leaving the contributions behind would strand the money — the pool
+   * would stay short with nothing on any screen left to explain it.
+   */
+  deleteGoal(id: string): Promise<void>;
+
+  getContribution(id: string): Promise<ContributionDetail | null>;
+  listContributions(query: ContributionQuery): Promise<ContributionDetail[]>;
+  createContribution(input: ContributionInput): Promise<GoalContribution>;
+  updateContribution(id: string, input: Partial<ContributionInput>): Promise<void>;
+  deleteContribution(id: string): Promise<void>;
+
+  /**
+   * Every goal with what it holds as of `onDay`, in the goals' own order.
+   *
+   * Takes a day so Home's window stepper reaches it too: stepping back to July
+   * should show what the car fund held in July, not what it holds now.
+   */
+  goalProgress(onDay: string): Promise<GoalProgress[]>;
+
+  /**
+   * Money in, money out, money set aside, and the difference over an inclusive
+   * day range — plus the balance carried in from everything before `from`.
    */
   monthFlow(from: string, to: string): Promise<MonthFlow>;
 

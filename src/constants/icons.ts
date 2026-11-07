@@ -129,6 +129,16 @@ const BY_KEY = new Map<string, IconSpec>(
 /** What a category gets when it is created without a choice. */
 export const DefaultIconKey = 'tag';
 
+/**
+ * What a goal gets when it is created without a choice.
+ *
+ * Deliberately not the category default. A goal is a thing you want, and a tag
+ * is the most generic mark in the set — a grid of goals all wearing it would
+ * throw away the one signal that tells a car fund from a holiday fund at a
+ * glance.
+ */
+export const DefaultGoalIcon = 'star';
+
 export function findIcon(key: string | null | undefined): IconSpec | null {
   if (!key) return null;
   return BY_KEY.get(key) ?? null;
