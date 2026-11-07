@@ -12,7 +12,8 @@
  * - **Slots 0–5 are the core.** These are the only ones {@link nextFreeSlot}
  *   hands out on its first pass, so an account that never opens the colour
  *   picker only ever sees these six. Validated all-pairs in both schemes
- *   against this app's card surfaces (light #FFFFFF, dark #191716): lightness
+ *   against this app's card surfaces (light #FFFFFF, dark #191716 — since
+ *   moved to the cooler #191C20, within 0.3% luminance of it): lightness
  *   band, chroma floor, contrast ≥ 3:1, colour-vision-deficiency separation
  *   (worst pair ΔE 11.0 light / 8.4 dark) and normal-vision separation (17.5 /
  *   17.4) all pass.
@@ -112,18 +113,18 @@ export const ChartInk = {
   light: {
     surface: '#FFFFFF',
     /** Unfilled bar track. */
-    track: '#EFECE8',
-    gridline: '#EFECE8',
-    muted: '#9A938C',
+    track: '#E8EBEE',
+    gridline: '#E8EBEE',
+    muted: '#8C939B',
     good: '#0F8A4C',
     /** Over budget. Distinct enough from the accent to not read as one. */
     critical: '#C0301F',
   },
   dark: {
-    surface: '#191716',
-    track: '#2A2725',
-    gridline: '#2A2725',
-    muted: '#756E68',
+    surface: '#191C20',
+    track: '#2A2E33',
+    gridline: '#2A2E33',
+    muted: '#6F777F',
     good: '#3BB36F',
     critical: '#E4553F',
   },

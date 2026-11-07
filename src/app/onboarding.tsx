@@ -12,7 +12,6 @@
  * can't submit.
  */
 
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
@@ -30,6 +29,7 @@ import { LogItArt, TwoAxesArt } from '@/components/onboarding-art';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Chip } from '@/components/ui/chip';
+import DateTimePicker from '@/components/ui/date-time-picker';
 import { findCountry } from '@/constants/countries';
 import { slotColor } from '@/constants/palette';
 import { FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
@@ -38,7 +38,7 @@ import { nowIso } from '@/db/ids';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import { formatTimeOfDay } from '@/lib/date';
-import { ensureNotificationPermission } from '@/lib/notifications';
+import { ensureNotificationPermission, SCHEDULING_SUPPORTED } from '@/lib/notifications';
 
 /** Envelope-shaped by design: pots money comes *from*, not kinds of purchase. */
 const SUGGESTED = ['Living', 'Personal', 'Savings', 'Other'];
@@ -209,59 +209,61 @@ export default function OnboardingScreen() {
                 </Pressable>
               </View>
 
-              <View style={styles.reminderBlock}>
-                <View style={styles.settingRow}>
-                  <View style={styles.settingText}>
-                    <ThemedText type="label">Remind me once a day</ThemedText>
-                    <ThemedText type="label" themeColor="textSecondary">
-                      The reminder tells you what you&apos;ve spent so far and which budget is
-                      tightest — not just &quot;open the app&quot;.
-                    </ThemedText>
-                  </View>
-                  <Switch value={wantsReminder} onValueChange={setWantsReminder} />
-                </View>
-
-                {wantsReminder && (
+              {SCHEDULING_SUPPORTED && (
+                <View style={styles.reminderBlock}>
                   <View style={styles.settingRow}>
-                    <ThemedText type="label">At</ThemedText>
-                    {/* iOS has no dialog to dismiss: the compact picker is a
-                        field that opens and closes its own overlay, so it sits
-                        in the row where the chip would be. Android's picker
-                        *is* a dialog, so there the chip stays and opens it. */}
-                    {Platform.OS === 'ios' ? (
-                      <DateTimePicker
-                        value={minuteOfDayToDate(reminderMinute)}
-                        mode="time"
-                        display="compact"
-                        themeVariant={scheme}
-                        accentColor={theme.accent}
-                        onValueChange={(_, date) => {
-                          if (date) setReminderMinute(date.getHours() * 60 + date.getMinutes());
-                        }}
-                      />
-                    ) : (
-                      <Chip
-                        label={formatTimeOfDay(reminderMinute)}
-                        selected
-                        onPress={() => setShowTimePicker(true)}
-                      />
-                    )}
+                    <View style={styles.settingText}>
+                      <ThemedText type="label">Remind me once a day</ThemedText>
+                      <ThemedText type="label" themeColor="textSecondary">
+                        The reminder tells you what you&apos;ve spent so far and which budget is
+                        tightest — not just &quot;open the app&quot;.
+                      </ThemedText>
+                    </View>
+                    <Switch value={wantsReminder} onValueChange={setWantsReminder} />
                   </View>
-                )}
 
-                {showTimePicker && (
-                  <DateTimePicker
-                    value={minuteOfDayToDate(reminderMinute)}
-                    mode="time"
-                    display="default"
-                    onValueChange={(_, date) => {
-                      setShowTimePicker(false);
-                      if (date) setReminderMinute(date.getHours() * 60 + date.getMinutes());
-                    }}
-                    onDismiss={() => setShowTimePicker(false)}
-                  />
-                )}
-              </View>
+                  {wantsReminder && (
+                    <View style={styles.settingRow}>
+                      <ThemedText type="label">At</ThemedText>
+                      {/* iOS and web have no dialog to dismiss: the compact picker is a
+                          field that opens and closes its own overlay, so it sits
+                          in the row where the chip would be. Android's picker
+                          *is* a dialog, so there the chip stays and opens it. */}
+                      {Platform.OS !== 'android' ? (
+                        <DateTimePicker
+                          value={minuteOfDayToDate(reminderMinute)}
+                          mode="time"
+                          display="compact"
+                          themeVariant={scheme}
+                          accentColor={theme.accent}
+                          onValueChange={(_, date) => {
+                            if (date) setReminderMinute(date.getHours() * 60 + date.getMinutes());
+                          }}
+                        />
+                      ) : (
+                        <Chip
+                          label={formatTimeOfDay(reminderMinute)}
+                          selected
+                          onPress={() => setShowTimePicker(true)}
+                        />
+                      )}
+                    </View>
+                  )}
+
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={minuteOfDayToDate(reminderMinute)}
+                      mode="time"
+                      display="default"
+                      onValueChange={(_, date) => {
+                        setShowTimePicker(false);
+                        if (date) setReminderMinute(date.getHours() * 60 + date.getMinutes());
+                      }}
+                      onDismiss={() => setShowTimePicker(false)}
+                    />
+                  )}
+                </View>
+              )}
 
               {selected.length === 0 && (
                 <ThemedText type="label" themeColor="textSecondary">

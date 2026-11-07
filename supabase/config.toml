@@ -189,6 +189,17 @@ enable_manual_linking = false
 # Must stay equal to MIN_PASSWORD_LENGTH in src/lib/password.ts. The app checks
 # the same number before submitting, purely to save a round trip; if the two
 # ever disagree, one of them is lying to the user.
+#
+# And "the server enforces this" was, for a while, not true of the *linked*
+# project. This file configures `supabase start` only, and the SCOPE note below
+# explains why `supabase config push` is deliberately never run — so this value
+# reached local development and nowhere else, while password.ts stated in its
+# header that the server was the real gate. The linked project sat on GoTrue's
+# default of 6, and anyone posting straight to /auth/v1/signup could take it.
+#
+# scripts/configure-auth-email.sh now PATCHes `password_min_length` alongside
+# the SMTP settings and reads it back, so the two cannot drift silently. If this
+# number moves, move it there in the same commit.
 minimum_password_length = 12
 # Passwords that do not meet the following requirements will be rejected as weak. Supported values
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
@@ -243,25 +254,57 @@ enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 #
-# Off, which is a real reduction in what the server enforces and is paid for in
-# the client. Confirming from both addresses is what normally stops a stolen
-# session from walking an account to an attacker's inbox — but `changeEmail` in
-# data/auth.tsx re-authenticates with the current password before it will start
-# a change at all, so that same attack already needs the password, which is the
-# one thing a stolen session doesn't come with.
+# On. This was off, on the grounds that `changeEmail` in data/auth.tsx asks for
+# the current password first, so a stolen session was not enough to walk an
+# account to an attacker's inbox. That reasoning was wrong in one specific way,
+# and the way matters: the password check runs *in the app*. It is not a thing
+# the server knows about. Anyone holding an access token skips it by sending the
+# request themselves —
 #
-# What it buys is a flow with one code instead of two. Two means asking someone
-# to fetch a code from the inbox they are leaving *and* the one they are moving
-# to, in order, and getting a "that code is wrong" if they mix them up. That is
-# enough friction to make people abandon a change they actually wanted.
+#   curl -X PUT .../auth/v1/user -H 'Authorization: Bearer <token>' \
+#        -d '{"email":"attacker@example.com"}'
 #
-# If the password re-authentication is ever removed from `changeEmail`, this
-# must go back to `true` in the same commit.
-double_confirm_changes = false
+# — and with only the new address confirming, the code lands in the inbox they
+# already control. From there every recovery path for the account points at
+# them. A control the client enforces is a control an attacker declines.
+#
+# The cost is the one the previous note described, and it was real: two codes,
+# from two inboxes, in order. account/email.tsx now walks those as two labelled
+# steps naming the address each code was sent to, which is the part that makes
+# them hard to mix up. That is the price of the server actually enforcing this.
+#
+# Paired with `secure_password_change` below — either one alone leaves a path
+# open, because an attacker who can move the address can then recover into it.
+double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+#
+# On, so an account cannot be opened against an address nobody proved they own.
+# Off, anyone could register victim@example.com and hold it — recoverable by the
+# true owner through a password reset, but noise in the meantime, and every
+# unverified address is a live recipient on the verified sending domain.
+#
+# signUp in data/auth.tsx already returns `needsEmailConfirmation` when the
+# server withholds a session, and sign-in.tsx turns that into a typed-code step
+# — the same 8-digit field the reset and email-change flows use. Turning this on
+# without the `{{ .Token }}` signup template from scripts/configure-auth-email.sh
+# mails a *link* instead, which lands on `site_url` and goes nowhere useful.
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
-secure_password_change = false
+#
+# On, for the same reason as `double_confirm_changes`: without it, GoTrue takes
+# a bare access token as sufficient to set a new password, and the current-
+# password prompt in account/password.tsx is decoration to anyone not using the
+# app to attack the account.
+#
+# `changePassword` handles both server behaviours rather than assuming one. It
+# re-signs-in first (which mints a session seconds old), then tries the update;
+# only if the server answers `reauthentication_needed` does it call
+# `reauthenticate()` and ask for the emailed nonce. So if the recent-login grace
+# applies, nobody is asked for a code — and if it doesn't, the flow still works.
+secure_password_change = true
+# Passwords shorter than this are rejected. Set here for local development and
+# pushed to the linked project by scripts/configure-auth-email.sh — see the note
+# on `minimum_password_length` below for why that script rather than this file.
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
 max_frequency = "1s"
 # Number of characters used in the email OTP.
@@ -336,11 +379,23 @@ max_frequency = "5s"
 # 4152127777 = "123456"
 
 # Configure logged in session timeouts.
-# [auth.sessions]
-# Force log out after the specified duration.
-# timebox = "24h"
-# Force log out if the user has been inactive longer than the specified duration.
-# inactivity_timeout = "8h"
+#
+# The refresh token is persisted unencrypted — expo-sqlite/kv-store on native,
+# localStorage on web (see the header of src/lib/supabase.ts, which argues the
+# tradeoff and is right that an unlocked device is a trusted device). What that
+# argument does not cover is how *long* a token lifted from either place stays
+# useful, which without a timeout is forever, because refresh rotation renews it
+# on every launch.
+#
+# 30 days of inactivity, not 8 hours: this is a budgeting app people open when
+# they spend money, and a week away from it is normal use, not abandonment.
+# Signing someone out for going on holiday would be a bug. The point is to put
+# *some* ceiling on a stolen token, not to make the app forget people.
+#
+# No `timebox`, which logs everyone out on a fixed schedule regardless of use —
+# that cost lands entirely on legitimate users and buys little here.
+[auth.sessions]
+inactivity_timeout = "720h"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
 # [auth.hook.before_user_created]

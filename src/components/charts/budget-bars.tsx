@@ -18,6 +18,7 @@ import { ChartInk, slotColor, withAlpha } from '@/constants/palette';
 import { Spacing } from '@/constants/theme';
 import type { BudgetProgress } from '@/db/types';
 import { useScheme } from '@/hooks/use-scheme';
+import { formatPeriodLabel } from '@/lib/date';
 import { formatMoney, percentOf } from '@/lib/money';
 
 const BAR_HEIGHT = 10;
@@ -28,9 +29,11 @@ const TRACK_ALPHA = 0.16;
 function BudgetBar({
   entry,
   currencyCode,
+  showTimeLeft,
 }: {
   entry: BudgetProgress;
   currencyCode: string;
+  showTimeLeft: boolean;
 }) {
   const scheme = useScheme();
   const ink = ChartInk[scheme];
@@ -71,9 +74,11 @@ function BudgetBar({
             : `${formatMoney(remaining, currencyCode)} left`}
         </ThemedText>
         <ThemedText type="label" themeColor="textSecondary">
-          {entry.daysLeft === 0
-            ? 'last day'
-            : `${entry.daysLeft} ${entry.daysLeft === 1 ? 'day' : 'days'} left`}
+          {showTimeLeft
+            ? entry.daysLeft === 0
+              ? 'last day'
+              : `${entry.daysLeft} ${entry.daysLeft === 1 ? 'day' : 'days'} left`
+            : formatPeriodLabel(entry.cycleStart, entry.cycleEnd)}
         </ThemedText>
       </View>
     </View>
@@ -115,9 +120,20 @@ function UncappedRow({
 export function BudgetBars({
   progress,
   currencyCode,
+  showTimeLeft = true,
 }: {
   progress: BudgetProgress[];
   currencyCode: string;
+  /**
+   * Whether the cycles being drawn are the ones running now.
+   *
+   * Off, each bar names the span it covers instead of counting down to its end.
+   * A countdown to a date in the past is simply false, and the span is the fact
+   * the user actually needs there: a weekly budget inside a month-long window
+   * covers one week of it, and without the dates that bar looks like the whole
+   * month's spending come up short.
+   */
+  showTimeLeft?: boolean;
 }) {
   const capped = progress.filter((entry) => entry.budget.limitMinor !== null);
   const uncapped = progress.filter((entry) => entry.budget.limitMinor === null);
@@ -125,7 +141,12 @@ export function BudgetBars({
   return (
     <View style={styles.container}>
       {capped.map((entry) => (
-        <BudgetBar key={entry.budget.id} entry={entry} currencyCode={currencyCode} />
+        <BudgetBar
+          key={entry.budget.id}
+          entry={entry}
+          currencyCode={currencyCode}
+          showTimeLeft={showTimeLeft}
+        />
       ))}
 
       {uncapped.length > 0 && (

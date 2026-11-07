@@ -25,10 +25,27 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Repository } from '@/data/repository';
 import { readWithRetries, useData } from '@/data/store';
-import type { ExpenseDetail, IncomeDetail } from '@/db/types';
+import type { ContributionDetail, ExpenseDetail, IncomeDetail } from '@/db/types';
 import { addDays, addPeriods, periodRange, today } from '@/lib/date';
 
 export type ActivityPeriod = 'day' | 'period';
+
+/**
+ * The one dimension the ledger is narrowed on, beyond its window.
+ *
+ * Budget, category *or* goal, never two at once. They are not orthogonal in the
+ * way a multi-axis filter would imply — a category filter already excludes
+ * income outright (see `read`), so combining it with a budget would produce a
+ * view whose "in" total is structurally zero and whose budget chip did nothing
+ * to earn its place in the state. A goal is more extreme still: nothing but
+ * contributions can match one, so intersecting it with either of the others is
+ * guaranteed empty. One active filter also means one chip row and one thing to
+ * clear.
+ */
+export interface ActivityFilter {
+  kind: 'budget' | 'category' | 'goal';
+  id: string;
+}
 
 export interface DayRange {
   /** Inclusive `YYYY-MM-DD` bounds. */
@@ -39,14 +56,20 @@ export interface DayRange {
 export interface ActivityWindow {
   expenses: ExpenseDetail[];
   incomes: IncomeDetail[];
+  contributions: ContributionDetail[];
 }
 
 /**
  * How many windows to hold. Enough for a long traversal in one direction plus
  * the prefetched edges, small enough that the memory is a rounding error at
  * this data size.
+ *
+ * Sized up once the filter row landed: a window is now a range *and* a filter,
+ * and each filter tap warms three ranges of its own. At the old 16 a user
+ * comparing five budgets evicted the unfiltered windows they started from, so
+ * clearing the filter went back to the skeleton it had already paid for.
  */
-const MaxCachedWindows = 16;
+const MaxCachedWindows = 24;
 
 interface CacheEntry {
   window: ActivityWindow;
@@ -71,14 +94,22 @@ export function useActivityWindow({
   period,
   startDay,
   search,
+  filter,
 }: {
   anchor: string;
   period: ActivityPeriod;
   /** The day of the month a budget period begins on. */
   startDay: number;
   search: string;
+  /** Budget, category or goal to narrow to, or null for the whole ledger. */
+  filter: ActivityFilter | null;
 }): ActivityWindowResult {
   const { repo, revision } = useData();
+
+  // The filter's contribution to a cache key, and the only form of it the
+  // effect below depends on: two filters with the same string are the same
+  // question, whatever object identity says.
+  const filterId = filterKey(filter);
 
   const range = useMemo(
     () => rangeFor(anchor, period, startDay),
@@ -117,14 +148,14 @@ export function useActivityWindow({
   const inflight = useRef(new Map<string, Promise<void>>());
   const [snapshot, setSnapshot] = useState<Map<string, CacheEntry>>(() => new Map());
 
-  const key = windowKey(range, search);
-  const prefetchKeys = prefetch.map((entry) => windowKey(entry, search)).join('|');
+  const key = windowKey(range, filter, search);
+  const prefetchKeys = prefetch.map((entry) => windowKey(entry, filter, search)).join('|');
 
   useEffect(() => {
     let cancelled = false;
 
     async function fill(target: DayRange, visible: boolean) {
-      const targetKey = windowKey(target, search);
+      const targetKey = windowKey(target, filter, search);
       const cached = cache.current.get(targetKey);
       if (cached && cached.revision === revision) return;
 
@@ -139,7 +170,7 @@ export function useActivityWindow({
         // consumer walked away would reject the consumer still waiting.
         pending = (async () => {
           try {
-            const window = await readWithRetries(() => read(repo, target, search));
+            const window = await readWithRetries(() => read(repo, target, filter, search));
             cache.current.set(targetKey, { window, revision });
             evict(cache.current);
           } finally {
@@ -177,7 +208,7 @@ export function useActivityWindow({
     // `prefetchKeys` stands in for `prefetch`, which is a fresh array whenever
     // the anchor moves but holds the same ranges far more often than that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo, revision, key, prefetchKeys, search]);
+  }, [repo, revision, key, prefetchKeys, search, filterId]);
 
   const entry = snapshot.get(key);
   // A miss on the exact key still has something to show if the same *range* was
@@ -187,19 +218,26 @@ export function useActivityWindow({
   // blinks out six times as a word is typed. A miss on the range itself has no
   // such stand-in, and gets the skeleton.
   //
+  // The filter is part of the prefix rather than of the tail, so this stand-in
+  // never reaches across it. Search narrows a list the user is still typing at
+  // and the old rows are a superset of the new ones; a filter tap is a finished
+  // question, and answering it with rows from a different budget would be the
+  // screen stating something false rather than something stale.
+  //
   // A stale entry — the right window, read before the last mutation — is shown
-  // for the same reason: it is about to be replaced by its own refetch, and
-  // announcing that would blank a list the user is looking at.
-  const best = entry ?? mostRecentForRange(snapshot, range);
+  // for the same reason as search: it is about to be replaced by its own
+  // refetch, and announcing that would blank a list the user is looking at.
+  const best = entry ?? mostRecentForRange(snapshot, range, filter);
 
   return { range, window: best?.window };
 }
 
 function mostRecentForRange(
   cache: Map<string, CacheEntry>,
-  range: DayRange
+  range: DayRange,
+  filter: ActivityFilter | null
 ): CacheEntry | undefined {
-  const prefix = `${range.from}:${range.to}:`;
+  const prefix = `${range.from}:${range.to}:${filterKey(filter)}:`;
   let latest: CacheEntry | undefined;
 
   // Insertion order, so the last match is the one read most recently.
@@ -225,22 +263,55 @@ function stepAnchor(
   return period === 'day' ? addDays(anchor, direction) : addPeriods(anchor, startDay, direction);
 }
 
-function windowKey(range: DayRange, search: string): string {
-  return `${range.from}:${range.to}:${search}`;
+/** Empty for the unfiltered ledger, so its keys read as they always did. */
+function filterKey(filter: ActivityFilter | null): string {
+  return filter ? `${filter.kind}=${filter.id}` : '';
 }
 
-async function read(repo: Repository, range: DayRange, search: string): Promise<ActivityWindow> {
-  const query = { from: range.from, to: range.to, search: search || undefined };
+// Search goes last because it is the only part a stand-in may cross — see
+// `mostRecentForRange`, which matches on everything before it.
+function windowKey(range: DayRange, filter: ActivityFilter | null, search: string): string {
+  return `${range.from}:${range.to}:${filterKey(filter)}:${search}`;
+}
 
-  // Two reads rather than one `listActivity` on the repository: expenses and
-  // income are separate tables with separate date columns, so a combined read
-  // would be these same two queries with the merge moved behind the interface.
-  const [expenses, incomes] = await Promise.all([
-    repo.listExpenses(query),
-    repo.listIncomes(query),
+async function read(
+  repo: Repository,
+  range: DayRange,
+  filter: ActivityFilter | null,
+  search: string
+): Promise<ActivityWindow> {
+  const bounds = { from: range.from, to: range.to, search: search || undefined };
+  const budgetId = filter?.kind === 'budget' ? filter.id : undefined;
+
+  // Three reads rather than one `listActivity` on the repository: expenses,
+  // income and goal contributions are separate tables with separate date
+  // columns, so a combined read would be these same three queries with the
+  // merge moved behind the interface.
+  //
+  // Each filter kind silences the reads it cannot match, rather than asking for
+  // rows already known to be irrelevant. Income has no category — not "an
+  // uncategorised one", none at all — and a contribution has neither a budget
+  // nor a category, so a goal filter is the only one it can answer.
+  const [expenses, incomes, contributions] = await Promise.all([
+    filter?.kind === 'goal'
+      ? Promise.resolve([])
+      : repo.listExpenses({
+          ...bounds,
+          budgetId,
+          categoryId: filter?.kind === 'category' ? filter.id : undefined,
+        }),
+    filter?.kind === 'category' || filter?.kind === 'goal'
+      ? Promise.resolve([])
+      : repo.listIncomes({ ...bounds, budgetId }),
+    filter?.kind === 'budget' || filter?.kind === 'category'
+      ? Promise.resolve([])
+      : repo.listContributions({
+          ...bounds,
+          goalId: filter?.kind === 'goal' ? filter.id : undefined,
+        }),
   ]);
 
-  return { expenses, incomes };
+  return { expenses, incomes, contributions };
 }
 
 /** Oldest insertion first, which is also least-recently-fetched. */

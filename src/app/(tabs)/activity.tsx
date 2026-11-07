@@ -3,12 +3,20 @@
  *
  * Income lives here rather than on a screen of its own because the question the
  * list answers is "what happened to my money", and a paycheck is half that
- * answer. Keeping them apart also left income with no route to reach it: the
- * edit screen exists, but nothing linked to it.
+ * answer. Money moved into a savings goal is here for the same reason and a
+ * sharper one: it leaves the spendable balance without being spent, so without
+ * a row for it Home's "Left" drops by a few hundred with nothing anywhere to
+ * account for it.
  *
  * Search is the cheap stand-in for asking "how much do I spend on coffee"
  * without forcing a category on every entry. It matches an expense's
- * description and an income's source — the free-text field on each side.
+ * description, an income's source and a movement's note — the free-text field
+ * on each of the three.
+ *
+ * The filter row underneath answers the same question for the entries that
+ * *are* filed: one budget, one goal or one category at a time, with the summary
+ * above narrowing along with the list, so the header always totals exactly what
+ * is on screen.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -24,7 +32,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ActivityFilterBar } from '@/components/activity-filter-bar';
 import { ActivityRow } from '@/components/activity-row';
+import { PeriodNav } from '@/components/period-nav';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Chip } from '@/components/ui/chip';
@@ -32,7 +42,12 @@ import { ChartInk } from '@/constants/palette';
 import { BottomTabInset, FieldText, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useData } from '@/data/store';
 import type { ActivityEntry } from '@/db/types';
-import { useActivityWindow, type ActivityPeriod } from '@/hooks/use-activity-window';
+import {
+  useActivityWindow,
+  type ActivityFilter,
+  type ActivityPeriod,
+} from '@/hooks/use-activity-window';
+import { useIsWide } from '@/hooks/use-is-wide';
 import { useScheme } from '@/hooks/use-scheme';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -50,22 +65,60 @@ type Period = ActivityPeriod;
 
 /** The local calendar day an entry falls on, whichever kind it is. */
 function entryDay(entry: ActivityEntry): string {
-  return entry.kind === 'expense' ? entry.spentOn : entry.receivedOn;
+  if (entry.kind === 'expense') return entry.spentOn;
+  if (entry.kind === 'income') return entry.receivedOn;
+  return entry.movedOn;
+}
+
+/**
+ * What an entry did to the spendable balance, signed.
+ *
+ * The one rule the day totals and the section headers both run on: income adds,
+ * an expense subtracts, and a movement into a goal subtracts exactly as an
+ * expense does. Money set aside has left the balance — it simply hasn't been
+ * spent, which is a distinction the *summary* above draws and an individual
+ * day's net cannot.
+ */
+function entryEffect(entry: ActivityEntry): number {
+  if (entry.kind === 'income') return entry.amountMinor;
+  if (entry.kind === 'expense') return -entry.amountMinor;
+  return entry.direction === 'in' ? -entry.amountMinor : entry.amountMinor;
 }
 
 export default function ActivityScreen() {
   const theme = useTheme();
+  const wide = useIsWide();
   const scheme = useScheme();
-  const { preferences } = useData();
+  const { preferences, budgets, categories, goals } = useData();
 
   const [period, setPeriod] = useState<Period>('period');
   const [anchor, setAnchor] = useState(today());
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<ActivityFilter | null>(null);
 
   // The ledger spans the same window as the budgets do, so a period's totals
   // here and the bars on Home can be read against each other.
   const startDay = preferences.periodStartDay;
   const calendarMonths = startDay === DefaultPeriodStartDay;
+
+  // What the active filter is *called*. Read from the cached slices rather than
+  // carried in the filter itself, so renaming a budget doesn't leave a stale
+  // name pinned in this screen's state.
+  const filterName =
+    filter === null
+      ? null
+      : (filter.kind === 'budget'
+          ? budgets.find((budget) => budget.id === filter.id)?.name
+          : filter.kind === 'goal'
+            ? goals.find((goal) => goal.id === filter.id)?.name
+            : categories.find((category) => category.id === filter.id)?.name) ?? null;
+
+  // Deleting a budget, goal or category doesn't reach into this screen's state,
+  // so a filter can outlive the thing it names — and expenses keep pointing at a
+  // tombstoned budget, so the narrowed read would still return rows. Resolving
+  // the filter against the live slices means it stops applying instead, which
+  // is the same thing the chip row shows once the chip is gone.
+  const activeFilter = filterName === null ? null : filter;
 
   // The window the user is on, with the ones on either side of it already read
   // — see hooks/use-activity-window.ts for why stepping used to feel like a
@@ -75,15 +128,21 @@ export default function ActivityScreen() {
     period,
     startDay,
     search: search.trim(),
+    filter: activeFilter,
   });
 
   const expenses = activity?.expenses;
   const incomes = activity?.incomes;
+  const contributions = activity?.contributions;
 
   const entries = useMemo<ActivityEntry[]>(() => {
     const merged: ActivityEntry[] = [
       ...(expenses ?? []).map((expense) => ({ kind: 'expense' as const, ...expense })),
       ...(incomes ?? []).map((income) => ({ kind: 'income' as const, ...income })),
+      ...(contributions ?? []).map((contribution) => ({
+        kind: 'contribution' as const,
+        ...contribution,
+      })),
     ];
 
     // Newest first, with `createdAt` breaking ties so two entries on the same
@@ -92,12 +151,19 @@ export default function ActivityScreen() {
       const byDay = entryDay(b).localeCompare(entryDay(a));
       return byDay !== 0 ? byDay : b.createdAt.localeCompare(a.createdAt);
     });
-  }, [expenses, incomes]);
+  }, [expenses, incomes, contributions]);
 
   const sections = useMemo(() => groupByDay(entries), [entries]);
 
   const inMinor = (incomes ?? []).reduce((sum, income) => sum + income.amountMinor, 0);
   const outMinor = (expenses ?? []).reduce((sum, expense) => sum + expense.amountMinor, 0);
+  // Net into goals, kept out of `outMinor` on purpose: setting money aside is
+  // not spending it, and a summary that added the two would report a bad month
+  // to someone who had a disciplined one.
+  const savedMinor = (contributions ?? []).reduce(
+    (sum, entry) => sum + (entry.direction === 'in' ? entry.amountMinor : -entry.amountMinor),
+    0
+  );
 
   function step(direction: -1 | 1) {
     if (period === 'day') {
@@ -116,8 +182,8 @@ export default function ActivityScreen() {
 
   return (
     <ThemedView style={styles.root}>
-      <SafeAreaView style={styles.safeArea} edges={['top']}>
-        <View style={styles.header}>
+      <SafeAreaView style={[styles.safeArea, wide && styles.wideSafeArea]} edges={['top']}>
+        <View style={[styles.header, wide && styles.wideHeader]}>
           <View style={styles.periodToggle}>
             <Chip label="Day" selected={period === 'day'} onPress={() => setPeriod('day')} />
             {/* "Month" only while a period *is* a month — otherwise the chip
@@ -146,44 +212,36 @@ export default function ActivityScreen() {
             )}
           </View>
 
-          <View style={styles.navRow}>
-            <ThemedText
-              type="title"
-              themeColor="textSecondary"
-              accessibilityRole="button"
-              accessibilityLabel="Previous period"
-              style={styles.navArrow}
-              onPress={() => step(-1)}>
-              ‹
-            </ThemedText>
-
-            <View style={styles.navLabel}>
-              <ThemedText type="label">{periodLabel}</ThemedText>
-              {/* "in" and "out" spelled out rather than signed, so the summary
-                  doesn't need the same sign convention as the rows to be read
-                  correctly at a glance. Held back until the window has actually
-                  been read: an unfilled total is zero, and zero is a number the
-                  user would believe. */}
-              <ThemedText type="label" themeColor="textSecondary">
-                {activity
-                  ? `${formatMoney(inMinor, preferences.currencyCode)} in · ${formatMoney(
-                      outMinor,
-                      preferences.currencyCode
-                    )} out`
-                  : '—'}
-              </ThemedText>
-            </View>
-
-            <ThemedText
-              type="title"
-              themeColor="textSecondary"
-              accessibilityRole="button"
-              accessibilityLabel="Next period"
-              style={[styles.navArrow, atPresent && styles.navArrowDisabled]}
-              onPress={atPresent ? undefined : () => step(1)}>
-              ›
-            </ThemedText>
-          </View>
+          {/* The jump-back chip lives up in the toggle row rather than in the
+              stepper's own slot for it: that row is always drawn, so the chip
+              coming and going moves nothing. "in" and "out" are spelled out
+              rather than signed, so the summary doesn't need the same sign
+              convention as the rows to be read correctly at a glance — and it's
+              held back until the window has actually been read, because an
+              unfilled total is zero and zero is a number the user would
+              believe. */}
+          <PeriodNav
+            label={periodLabel}
+            subtitle={
+              activity
+                ? [
+                    `${formatMoney(inMinor, preferences.currencyCode)} in`,
+                    `${formatMoney(outMinor, preferences.currencyCode)} out`,
+                    // Only when the window actually moved money to or from a
+                    // goal. On an account that has never used them this line
+                    // stays the two figures it has always been.
+                    savedMinor !== 0 &&
+                      `${formatMoney(Math.abs(savedMinor), preferences.currencyCode)} ${
+                        savedMinor > 0 ? 'set aside' : 'back out'
+                      }`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
+                : '—'
+            }
+            onPrev={() => step(-1)}
+            onNext={atPresent ? undefined : () => step(1)}
+          />
 
           <View style={[styles.searchWrap, { backgroundColor: theme.backgroundElement }]}>
             <TextInput
@@ -197,6 +255,14 @@ export default function ActivityScreen() {
               accessibilityLabel="Search activity"
             />
           </View>
+
+          <ActivityFilterBar
+            budgets={budgets}
+            goals={goals}
+            categories={categories}
+            filter={activeFilter}
+            onChange={setFilter}
+          />
         </View>
 
         {/* Only when there is nothing at all to draw. A window being *refined*
@@ -215,8 +281,9 @@ export default function ActivityScreen() {
                 <ThemedText type="label" themeColor="textSecondary">
                   {formatDayLabel(section.dayKey)}
                 </ThemedText>
-                {/* The day's net, signed, because a day can now hold both
-                    directions and a bare total would hide one of them. */}
+                {/* The day's net effect on the spendable balance, signed,
+                    because a day can hold all three kinds and a bare total
+                    would hide two of them. */}
                 <ThemedText
                   type="label"
                   themeColor="textSecondary"
@@ -234,9 +301,7 @@ export default function ActivityScreen() {
             )}
             ListEmptyComponent={
               <ThemedText type="label" themeColor="textSecondary" style={styles.empty}>
-                {search.trim()
-                  ? `Nothing matching “${search.trim()}” in this period.`
-                  : 'Nothing logged in this period yet.'}
+                {emptyMessage(search.trim(), filterName)}
               </ThemedText>
             }
           />
@@ -244,6 +309,20 @@ export default function ActivityScreen() {
       </SafeAreaView>
     </ThemedView>
   );
+}
+
+/**
+ * Why the list is empty, naming every narrowing that is actually on.
+ *
+ * An empty period reads as "you logged nothing", which is a different message
+ * from "nothing here matches what you asked for" — and with two narrowings
+ * available, a message that named only one would send the user hunting for a
+ * filter they had already cleared.
+ */
+function emptyMessage(search: string, filterName: string | null): string {
+  const scope = filterName ? ` in ${filterName}` : '';
+  if (search) return `Nothing matching “${search}”${scope} this period.`;
+  return filterName ? `Nothing${scope} this period.` : 'Nothing logged in this period yet.';
 }
 
 /**
@@ -301,7 +380,7 @@ function LedgerSkeleton() {
 
 interface DaySection {
   dayKey: string;
-  /** Income less expenses for the day. */
+  /** What the day did to the spendable balance — see {@link entryEffect}. */
   netMinor: number;
   data: ActivityEntry[];
 }
@@ -314,7 +393,7 @@ function groupByDay(entries: ActivityEntry[]): DaySection[] {
     const dayKey = entryDay(entry);
     const section = byDay.get(dayKey) ?? { dayKey, netMinor: 0, data: [] };
 
-    section.netMinor += entry.kind === 'income' ? entry.amountMinor : -entry.amountMinor;
+    section.netMinor += entryEffect(entry);
     section.data.push(entry);
     byDay.set(dayKey, section);
   }
@@ -337,6 +416,14 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.three,
     gap: Spacing.three,
   },
+  // A ledger stays one readable column on a wide screen — it is read down, not
+  // across — so the wide layout only gives it room to breathe.
+  wideSafeArea: {
+    maxWidth: 800,
+  },
+  wideHeader: {
+    paddingTop: Spacing.five,
+  },
   periodToggle: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -344,21 +431,6 @@ const styles = StyleSheet.create({
   },
   jumpToPresent: {
     marginLeft: 'auto',
-  },
-  navRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
-  },
-  navArrow: {
-    paddingHorizontal: Spacing.two,
-  },
-  navArrowDisabled: {
-    opacity: 0.25,
-  },
-  navLabel: {
-    flex: 1,
-    alignItems: 'center',
   },
   searchWrap: {
     borderRadius: Spacing.three,

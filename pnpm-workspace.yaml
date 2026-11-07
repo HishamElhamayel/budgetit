@@ -1,2 +1,36 @@
 allowBuilds:
   unrs-resolver: true
+
+# Transitive pins that `pnpm audit` flags and Expo has not yet moved off.
+#
+# `overrides` lives here rather than under a "pnpm" key in package.json: pnpm 11
+# stopped reading that key and ignores it silently apart from one warning.
+overrides:
+  # GHSA-2v37-7h3g-55p8 — infinite loop when a custom generator is given size 0.
+  # Reached through metro/postcss, so it never ships in the app; taken anyway
+  # because 3.3.18 is a patch on the version already resolved and costs nothing.
+  nanoid@<3.3.18: '>=3.3.18'
+#
+# Deliberately NOT overridden, and worth writing down so the next person does
+# not spend the afternoon rediscovering it:
+#
+#   image-size  GHSA-w3rx-r6r6-pgpr, GHSA-5p2g-fcmc-qvqq (both high)
+#               Fixed in 2.0.3. The resolved version is 1.2.1 and there is no
+#               patched 1.x — 1.2.1 is the last of that line. The dependent is
+#               metro, which calls it directly, so this is a major bump to the
+#               bundler's image parser.
+#
+#   uuid        GHSA-w5hq-g745-h8pq (moderate)
+#               Fixed in 11.1.1. The resolved version is 7.0.3, pulled in by
+#               `xcode` for writing the Xcode project during prebuild. Four
+#               major versions, and the v7 API differs from v11.
+#
+# Both are denial of service by infinite loop or a missing bounds check, in
+# build-time tooling whose only inputs are this repository's own asset and
+# project files. Neither is in the app binary and neither is reachable by anyone
+# who is not already running the build. Forcing a major version on Metro and on
+# the Xcode project writer to fix a hang a developer could only inflict on
+# themselves trades a real risk of a broken build for no reduction in exposure.
+#
+# Revisit when Expo bumps them upstream — `pnpm why image-size` and
+# `pnpm why uuid` will show it the moment the dependent moves.

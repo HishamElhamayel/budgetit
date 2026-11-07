@@ -31,8 +31,14 @@ yarn-error.*
 *.pem
 
 # local env files
+#
+# `.env.*` rather than `.env*.local`, which covered .env.local but left
+# .env.production and .env.development tracked — and eas.json names build
+# profiles after exactly those two, so they are the files most likely to appear
+# next and the worst ones to commit. The negation has to follow the pattern it
+# undoes, or .env.example goes with them.
 .env
-.env*.local
+.env.*
 !.env.example
 
 # typescript
@@ -43,3 +49,6 @@ example
 # generated native folders
 /ios
 /android
+.vercel
+.env*
+!.env.example

@@ -1,6 +1,6 @@
 # budgetit
 
-An Expo app for logging expenses against budgets, backed by Supabase for storage and auth.
+An Expo app — on the web and on iOS — for logging expenses against budgets, backed by Supabase for storage and auth.
 
 ## Setup
 
@@ -41,15 +41,47 @@ An Expo app for logging expenses against budgets, backed by Supabase for storage
 
    Check that **`mailer_otp_length`** (Authentication → Sign In / Providers) matches `EMAIL_CODE_LENGTH` in `src/data/auth.tsx`. Supabase currently defaults to 8; older projects are often 6. If they disagree, the input truncates a correct code and rejects it.
 
-   If you use Resend, `scripts/configure-auth-email.sh` does all of the above against the linked project in one go — SMTP, both code templates, the OTP length, and the single-code email change — and reads back what the server actually stored, including whether each template carries `{{ .Token }}`. It needs `SUPABASE_ACCESS_TOKEN` in the environment and `RESEND_API_KEY` / `BUDGETIT_MAIL_FROM` in `.env.local`.
+   If you use Resend, `scripts/configure-auth-email.sh` does all of the above against the linked project in one go — SMTP, all three code templates, the OTP length, dual-confirmation email change, signup confirmation, and the password policy — then reads back what the server actually stored, including whether each template carries `{{ .Token }}`. It needs `SUPABASE_ACCESS_TOKEN` in the environment and `RESEND_API_KEY` / `BUDGETIT_MAIL_FROM` in `.env.local`.
 
    > **Deliverability trap:** sending from a provider's shared sandbox address (Resend's `onboarding@resend.dev`, for example) only reaches the address the provider account was registered with. Reset emails to anyone else vanish silently. Verify a domain before letting real users near the reset flow.
+
+5. **Run `scripts/configure-auth-email.sh`, or set the same things by hand.** Four of them are not cosmetic, and the app cannot detect that they are missing — every prompt still appears, while the server accepts requests that skip the prompts entirely:
+
+   | Setting | Must be | Why |
+   | --- | --- | --- |
+   | `password_min_length` | `12` | `src/lib/password.ts` promises this. GoTrue defaults to **6**, and the app's check is skipped by anyone posting straight to `/auth/v1/signup`. |
+   | Secure email change | on | Otherwise only the *new* address confirms, so an access token is enough to move an account to somebody else's inbox — and every recovery path with it. |
+   | Reauthentication on password change | on | Otherwise a bare access token can set a new password. The "current password" field is enforced by the client and by nothing else. |
+   | Confirm email | on | Otherwise accounts can be opened against addresses nobody proved they own. |
+
+   The script's last block reads all four back and prints `WRONG` with the value it found. That readback is the point — these are settings that fail silently and look fine from inside the app.
 
 5. **Start the app**
 
    ```bash
    pnpm start
    ```
+
+### Running as a website
+
+The same codebase exports to a static site, which is the way to get budgetit onto an iPhone without the App Store: open the site in Safari, **Share → Add to Home Screen**, and it launches full-screen from its own icon, with the session kept in `localStorage`.
+
+```bash
+pnpm web          # dev server in the browser
+pnpm build:web    # static export into dist/
+npx expo serve    # serve dist/ locally, the way a host would
+pnpm deploy:web   # build on Vercel and publish to production
+```
+
+It is hosted on Vercel at **https://budgetit-six.vercel.app**. `vercel.json` holds the whole setup: Vercel installs with pnpm 12.9.1, runs the static export, and serves `dist/`. It also maps `/budget/123` and the other `[id]` routes onto their exported pages, which a static host can't work out on its own. The project is linked to the GitHub repo, so a push to `main` deploys too.
+
+The build runs on Vercel, not your machine, so it reads `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from the Vercel project's environment variables (`vercel env ls`). `.vercelignore` keeps `.env.local` out of the upload because it holds `RESEND_API_KEY`. If the build fails with "Missing Supabase credentials", the Vercel variables are what's missing.
+
+What is different on web:
+
+- **No daily reminder.** Local scheduled notifications have no browser equivalent, so the setting is hidden (`SCHEDULING_SUPPORTED` in `src/lib/notifications.ts`). A web reminder would need Web Push and a server to send it.
+- **Date and time fields are the browser's own** `<input type="date|time">` (`src/components/ui/date-time-picker.web.tsx`), because the community picker renders nothing on web.
+- **Home-screen install** comes from `src/app/+html.tsx` and `public/manifest.json`. The icons in `public/` are generated from `assets/images/icon.png`; regenerate them if the icon changes.
 
 ### Building for a device
 
@@ -72,7 +104,9 @@ eas env:create --environment preview --name EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
 ### Working against a local database
 
-`supabase start` runs the whole stack in Docker and applies the migrations. Point `.env.local` at the URL and publishable key it prints, and note that its default settings skip email confirmation — handy for testing signup without a mail inbox.
+`supabase start` runs the whole stack in Docker and applies the migrations. Point `.env.local` at the URL and publishable key it prints.
+
+Local runs from `supabase/config.toml`, which turns email confirmation, dual-confirmation email change and password reauthentication **on** — the same as production, so a flow that works here works there. Every email those produce is caught by the local inbox at <http://127.0.0.1:54324> rather than sent, so none of it needs a real mailbox. Nothing in `config.toml` reaches the linked project; see the SCOPE note in that file, and use `scripts/configure-auth-email.sh` for anything that has to.
 
 ## Architecture
 
@@ -94,7 +128,7 @@ The subtle part: **verifying the code signs the user in for real.** Without the 
 
 - **Ids are client-generated UUIDs.** A row can be built and inserted without a round trip to find out what it is called.
 - **Money is an integer count of minor units**, never a float. A sum of 100 expenses should not land on 249.99999999997.
-- **Dates come in two flavours.** `spentOn` / `receivedOn` are local calendar days (`YYYY-MM-DD`, Postgres `date`) and must not shift across time zones. `createdAt` / `updatedAt` / `deletedAt` are UTC instants used for ordering.
+- **Dates come in two flavours.** `spentOn` / `receivedOn` / `movedOn` are local calendar days (`YYYY-MM-DD`, Postgres `date`) and must not shift across time zones. `createdAt` / `updatedAt` / `deletedAt` are UTC instants used for ordering.
 - **Deletes are soft.** Every read filters `deleted_at IS NULL`; `delete*` writes a tombstone. The one exception is "reset all data", which hard-deletes — a reset means the data never happened.
 - **Reads don't filter by `user_id`.** RLS already restricts every table to `auth.uid()`, and a second copy of that rule in the client would be one that can drift. Writes *do* carry the id, to satisfy the policies' `with check`.
 
@@ -105,10 +139,26 @@ The subtle part: **verifying the code signs the user in for real.** Without the 
 - `seed_default_categories()`, called by a trigger on `auth.users`, so a new account has six categories before its first launch. Seeding on signup keeps it exactly-once; doing it client-side would let two devices race and seed twice.
 - `reset_all_data()`, so the wipe and the reseed share a transaction instead of being six round trips with no way to roll back a failure halfway through.
 - `month_flow()`, because the balance it carries into a month is a sum over *all* history rather than one bounded range. Every other rollup is a client-side reduce over a fetched month; this is the one big enough to meet PostgREST's row cap, where a truncated response would report a plausible wrong balance rather than failing.
+- `delete_goal()`, so a goal and every contribution to it are tombstoned in one transaction. Two round trips with a failure between them would leave money set aside for a goal that no longer exists — short in the balance, with nothing on screen to attribute it to.
+
+New tables need **explicit `grant`s** to `authenticated`. The original tables didn't, because `auto_expose_new_tables` defaulted to true when they were created; it now defaults to false, and the symptom of forgetting is a 404 from the Data API rather than anything the migration itself flags.
+
+### Saving up for things
+
+A **goal** is the mirror of a budget: a pot money goes *into* rather than one it comes out of. Money moved into one leaves the spendable balance without being spent, so a car fund shows up in "Left" — which means "left to spend" — but never in the donut, never against a budget's limit, and never as an expense.
+
+The shortcut this replaces is a budget called "Savings" with expenses logged against it. It gets the balance right and everything else wrong: the money reads as gone, it competes with groceries in the category chart, and there is nowhere to record what it is *for* or how far along it is.
+
+Two rules follow, and both are load-bearing:
+
+- **A contribution carries an explicit `direction`, not a signed amount.** Money comes back out of goals — plans change, and the day you buy the car it has to return to the balance so the expense can be logged against it. Explicit direction keeps `amount_minor >= 0` enforceable in the database rather than as a rule only the client remembers.
+- **Deleting a goal releases its money**, which is the opposite of deleting a budget. A budget's expenses are money genuinely gone and the history has to stand; a goal's contributions are an *earmark*, and withdrawing the earmark is the whole meaning of deleting one. Leaving them behind would strand the money permanently.
+
+Contributions appear in Activity alongside expenses and income. Without a row for one, "Left" on Home drops by a few hundred with nothing anywhere to account for it — the same problem the carried-over line below exists to solve.
 
 ### Money carries over
 
-A month's "Left" is `carried in + in − out`, not `in − out`: what was left in July is still yours in August. The carried figure is **derived on every read, never stored** — expenses can be logged into a month that has already closed, and a snapshot taken at the boundary would go stale the moment one arrived. Summing the history instead means a receipt entered late corrects every month after it. Deficits roll forward too, for the same reason surpluses do.
+A month's "Left" is `carried in + in − out − set aside`, not `in − out`: what was left in July is still yours in August. The carried figure is **derived on every read, never stored** — expenses can be logged into a month that has already closed, and a snapshot taken at the boundary would go stale the moment one arrived. Summing the history instead means a receipt entered late corrects every month after it. Deficits roll forward too, for the same reason surpluses do.
 
 ## Scripts
 
@@ -116,5 +166,7 @@ A month's "Left" is `carried in + in − out`, not `in − out`: what was left i
 | --- | --- |
 | `pnpm start` | Expo dev server |
 | `pnpm ios` / `pnpm android` / `pnpm web` | Start on a specific platform |
+| `pnpm build:web` | Static web export into `dist/` |
+| `pnpm deploy:web` | Deploy to Vercel production |
 | `pnpm lint` | ESLint |
 | `npx tsc --noEmit` | Typecheck |

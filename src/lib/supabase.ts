@@ -7,10 +7,26 @@
  * fine. `session-storage.ts` resolves that per platform.
  *
  * Note that this stores the refresh token in plain SQLite rather than the
- * device keychain. That matches what the rest of the app assumes (an unlocked
- * device is a trusted device) and what Supabase's own Expo guide does; moving
- * to expo-secure-store means chunking around its 2048-byte value limit, which
- * is worth doing only if the threat model changes.
+ * device keychain, and in `localStorage` on web. That matches what the rest of
+ * the app assumes (an unlocked device is a trusted device) and what Supabase's
+ * own Expo guide does; moving to expo-secure-store means chunking around its
+ * 2048-byte value limit, which is worth doing only if the threat model changes.
+ *
+ * What that argument depends on, and did not always get: a token lifted from
+ * either place has to be worth less than the account. For a while it was worth
+ * exactly the account — GoTrue was configured to accept a bare access token as
+ * sufficient to change the email address and then the password, so anyone who
+ * read this file's storage owned the account permanently. The prompts in
+ * data/auth.tsx did not prevent that; they run in the app, and the attack does
+ * not. Both settings are now on (see scripts/configure-auth-email.sh), so a
+ * stolen token reads data and cannot keep itself.
+ *
+ * `[auth.sessions] inactivity_timeout` in supabase/config.toml is the other
+ * half: it puts a ceiling on how long a lifted token stays valid, which
+ * refresh-token rotation otherwise extends indefinitely.
+ *
+ * If either of those is ever turned off, this comment stops being true and
+ * expo-secure-store stops being optional.
  */
 
 import 'react-native-url-polyfill/auto';

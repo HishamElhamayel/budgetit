@@ -26,6 +26,7 @@ export function Chip({
   icon,
   onPress,
   style,
+  accessibilityLabel,
 }: {
   label: string;
   selected?: boolean;
@@ -35,6 +36,12 @@ export function Chip({
   icon?: string | null;
   onPress?: () => void;
   style?: StyleProp<ViewStyle>;
+  /**
+   * Overrides the spoken name, for rows where the label alone is ambiguous —
+   * a budget and a category can share a name, and the dot-versus-icon mark
+   * that tells them apart visually says nothing out loud.
+   */
+  accessibilityLabel?: string;
 }) {
   const theme = useTheme();
 
@@ -42,6 +49,7 @@ export function Chip({
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ selected }}
       style={({ pressed }) => [
         styles.chip,

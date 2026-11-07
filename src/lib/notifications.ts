@@ -25,9 +25,13 @@ const ANDROID_CHANNEL_ID = 'daily-reminder';
 /**
  * Scheduling is native-only — `cancelAllScheduledNotificationsAsync` and
  * friends throw outright on web rather than no-oping. Every entry point below
- * bails early so the web build stays usable for development.
+ * bails early, and screens read this to hide the reminder settings entirely:
+ * a switch that can never schedule anything is worse than no switch.
+ *
+ * A browser reminder would need Web Push, which means a server sending on a
+ * schedule — local scheduling has no web equivalent.
  */
-const SCHEDULING_SUPPORTED = Platform.OS !== 'web';
+export const SCHEDULING_SUPPORTED = Platform.OS !== 'web';
 
 if (SCHEDULING_SUPPORTED) {
   Notifications.setNotificationHandler({

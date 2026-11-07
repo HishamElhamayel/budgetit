@@ -17,7 +17,9 @@ export type ThemedTextProps = TextProps & {
 /**
  * Hierarchy here comes from size and *ink colour*, not weight — one weight per
  * size, and a step down to `textSecondary` where something should recede. It
- * keeps the type from turning into a pile of near-identical bolds.
+ * keeps the type from turning into a pile of near-identical bolds. The two
+ * exceptions are `display` and `figure`, which are money: those are set wide
+ * and heavy on purpose, as the one loud thing on any screen.
  */
 export function ThemedText({
   style,
@@ -38,6 +40,7 @@ export function ThemedText({
 
 const styles = StyleSheet.create({
   display: Type.display,
+  figure: Type.figure,
   title: Type.title,
   heading: Type.heading,
   body: Type.body,

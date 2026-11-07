@@ -25,11 +25,33 @@
  * input component and the "that code is wrong or expired" copy are all already
  * built and already understood.
  *
- * Both changes re-authenticate first. Supabase does not require the current
- * password to set a new one — a valid session is enough — which means an
- * unlocked, unattended phone is a full account takeover: change the email,
- * change the password, and the original owner is locked out of their own
- * budgets. Asking for the password costs one round trip and closes that.
+ * Both changes re-authenticate first, and — this is the part that took a second
+ * pass to get right — the server is configured to require it too.
+ *
+ * Asking for the current password here closes the obvious hole: an unlocked,
+ * unattended phone should not be a full account takeover. What it does *not*
+ * close is anyone who never opens the app. This client talks straight to
+ * PostgREST and GoTrue with no server of ours in between, so every check
+ * written in this file is a check an attacker holding an access token simply
+ * does not run:
+ *
+ *   curl -X PUT .../auth/v1/user -H 'Authorization: Bearer <token>' \
+ *        -d '{"email":"attacker@example.com"}'
+ *
+ * With single-address confirmation and no reauthentication requirement, that
+ * request plus the code landing in the attacker's own inbox is the whole
+ * takeover — and the password prompt below never happens. So the real controls
+ * are two GoTrue settings, applied by scripts/configure-auth-email.sh:
+ * `mailer_secure_email_change_enabled` (a code to the old address as well as
+ * the new) and `security_update_password_require_reauthentication`.
+ *
+ * What remains here is the client half, and it earns its place by making the
+ * server's rules cheap to satisfy rather than by enforcing them: the password
+ * prompt catches a wrong password before any email is sent, and — because
+ * `reauthenticate` signs in again and so mints a session seconds old —
+ * `changePassword` usually clears the server's recent-login grace without
+ * anyone being asked for a nonce at all. It falls back to asking only when the
+ * server actually says no. Never treat the prompts here as the protection.
  */
 
 import type { AuthError, Session, User } from '@supabase/supabase-js';
@@ -65,12 +87,22 @@ export const EMAIL_CODE_LENGTH = 8;
 export interface AuthResult {
   error: string | null;
   /**
-   * True when sign-up succeeded but the account still needs the confirmation
-   * link clicked. Supabase returns a user with no session in that case, which
-   * is otherwise indistinguishable from success and leaves the form sitting
-   * there looking broken.
+   * True when sign-up succeeded but the account still needs its address
+   * confirmed. Supabase returns a user with no session in that case, which is
+   * otherwise indistinguishable from success and leaves the form sitting there
+   * looking broken.
    */
   needsEmailConfirmation?: boolean;
+  /**
+   * True when the server refused a password change until a fresh nonce is
+   * verified, and one has just been emailed. The caller has to collect it and
+   * call `changePassword` again with it.
+   *
+   * Not an error, and deliberately not modelled as one: nothing has gone wrong
+   * and nothing the user typed was rejected. It is one more step, and a screen
+   * that renders it as a red message would be lying about that.
+   */
+  needsNonce?: boolean;
 }
 
 /**
@@ -109,18 +141,39 @@ interface AuthContextValue {
   passwordRecovery: boolean;
   signIn(email: string, password: string): Promise<AuthResult>;
   signUp(email: string, password: string, details: SignUpDetails): Promise<AuthResult>;
+  /** Trade the code emailed on sign-up for a confirmed account and a session. */
+  verifySignUp(email: string, code: string): Promise<AuthResult>;
+  /** Send another sign-up confirmation code to an address awaiting one. */
+  resendSignUpCode(email: string): Promise<AuthResult>;
   signOut(): Promise<void>;
-  /** Start an email change: emails a code to the new address. */
+  /**
+   * Start an email change: emails a code to the new address, and — because the
+   * project runs with secure email change on — one to the current address too.
+   */
   changeEmail(nextEmail: string, currentPassword: string): Promise<AuthResult>;
   /**
-   * Finish an email change by trading the emailed code for the new address.
+   * Confirm one side of an email change.
    *
    * Takes the address the code was sent to, because that is what the server
-   * looks the token up against — and it is the *new* one, not the account's
-   * current one.
+   * looks the token up against. With confirmation required from both addresses
+   * this is called twice — once with the account's current address, once with
+   * the new one — and the change lands only after the second. Passing the wrong
+   * address fails as "token not found", which reads like a wrong code, so the
+   * screen labels each step with the inbox it means.
    */
-  verifyEmailChange(nextEmail: string, code: string): Promise<AuthResult>;
-  changePassword(currentPassword: string, nextPassword: string): Promise<AuthResult>;
+  verifyEmailChange(address: string, code: string): Promise<AuthResult>;
+  /**
+   * Change the password, collecting a nonce only if the server demands one.
+   *
+   * Called first without a `nonce`. If that comes back `needsNonce`, a code has
+   * been emailed and the same call is made again carrying it. See the body for
+   * why it is shaped as a retry rather than as an unconditional two-step.
+   */
+  changePassword(
+    currentPassword: string,
+    nextPassword: string,
+    nonce?: string
+  ): Promise<AuthResult>;
   /** Email a one-time code to whoever owns this address. */
   sendPasswordResetCode(email: string): Promise<AuthResult>;
   /** Trade the emailed code for a session. */
@@ -182,7 +235,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email: email.trim(),
           password,
         });
-        return { error: error ? describe(error) : null };
+        if (!error) return { error: null };
+
+        // An account that exists but never confirmed its address. Reported the
+        // same way sign-up reports it, so the screen has one branch for "this
+        // person needs to type a code" rather than two — otherwise someone who
+        // closed the app mid-signup can never get back to the code field: signing
+        // up again collides with the existing account, and signing in bounces off
+        // this. Not surfaced as an error, because nothing they typed was wrong.
+        if (error.code === 'email_not_confirmed') {
+          return { error: null, needsEmailConfirmation: true };
+        }
+
+        return { error: describe(error) };
       },
 
       async signUp(email, password, details) {
@@ -203,9 +268,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) return { error: describe(error) };
 
         // A user with no session means the project has email confirmation on
-        // and the link hasn't been clicked yet. With confirmation off, the
-        // session arrives here and `onAuthStateChange` navigates on its own.
+        // and the code hasn't been entered yet. With confirmation off, the
+        // session arrives here and `onAuthStateChange` navigates on its own —
+        // so this stays a check rather than an assumption, and the sign-up
+        // screen works against a project configured either way.
         return { error: null, needsEmailConfirmation: data.session === null };
+      },
+
+      async verifySignUp(email, code) {
+        // `type: 'signup'` rather than 'email': the token was minted by the
+        // signup confirmation, and looking it up under the wrong type fails as
+        // "token not found" — indistinguishable, from the screen, from a code
+        // the user mistyped.
+        const { error } = await supabase.auth.verifyOtp({
+          email: email.trim(),
+          token: code.trim(),
+          type: 'signup',
+        });
+        if (error) return { error: describe(error) };
+
+        // A successful verify returns a session, which supabase-js stores and
+        // `onAuthStateChange` picks up — the navigator moves on its own.
+        return { error: null };
+      },
+
+      async resendSignUpCode(email) {
+        const { error } = await supabase.auth.resend({
+          type: 'signup',
+          email: email.trim(),
+        });
+        return { error: error ? describe(error) : null };
       },
 
       async signOut() {
@@ -247,29 +339,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: null };
       },
 
-      async verifyEmailChange(nextEmail, code) {
+      async verifyEmailChange(address, code) {
         const { error } = await supabase.auth.verifyOtp({
-          // The address the code was mailed to, which is the new one. Passing
-          // the account's current address here is the obvious mistake and
-          // fails as "token not found", which reads like a wrong code.
-          email: nextEmail.trim(),
+          // Whichever address this code was mailed to. With secure email change
+          // on there are two in flight at once, and each token is only valid
+          // against its own address — passing the other one fails as "token not
+          // found", which reads like a wrong code rather than a wrong inbox.
+          email: address.trim(),
           token: code.trim(),
           type: 'email_change',
         });
         if (error) return { error: describe(error) };
 
-        // A successful verify returns a session carrying the updated user, and
-        // supabase-js stores it — so `user.email` is the new address and
-        // `pendingEmail` has gone back to null without anything else running.
+        // Confirming the first side returns a session that still carries the
+        // old address and a live `new_email`; the change only lands on the
+        // second. Either way supabase-js stores what came back, so `user.email`
+        // and `pendingEmail` are already correct and the caller reads progress
+        // off those rather than off a flag threaded back from here.
         return { error: null };
       },
 
-      async changePassword(currentPassword, nextPassword) {
-        const reauthError = await reauthenticate(session, currentPassword);
-        if (reauthError) return { error: reauthError };
+      async changePassword(currentPassword, nextPassword, nonce) {
+        // Skipped on the retry: the first pass already proved the password, and
+        // signing in again would spend a round trip to learn the same thing and
+        // mint a third session for one password change. The nonce is the proof
+        // that matters to the server anyway.
+        if (nonce === undefined) {
+          const reauthError = await reauthenticate(session, currentPassword);
+          if (reauthError) return { error: reauthError };
+        }
 
-        const { error } = await supabase.auth.updateUser({ password: nextPassword });
-        return { error: error ? describe(error) : null };
+        // Tried before asking for a nonce, not after, and that ordering is the
+        // whole design. `reauthenticate` above just signed in, so the session is
+        // seconds old — and a project whose reauthentication requirement honours
+        // a recent-login grace accepts this outright. Asking for a nonce first
+        // would mail a code to everyone changing a password, for nothing, on
+        // every project where the grace applies.
+        //
+        // If the grace does not apply, the server says so and the branch below
+        // picks it up. Neither behaviour is assumed.
+        const { error } = await supabase.auth.updateUser(
+          nonce === undefined
+            ? { password: nextPassword }
+            : { password: nextPassword, nonce: nonce.trim() }
+        );
+        if (!error) return { error: null };
+
+        if (error.code === 'reauthentication_needed') {
+          // Sends the nonce. The caller collects it and calls back with it —
+          // there is no separate verify step, `updateUser` checks it inline.
+          const { error: sendError } = await supabase.auth.reauthenticate();
+          if (sendError) return { error: describe(sendError) };
+          return { error: null, needsNonce: true };
+        }
+
+        return { error: describe(error) };
       },
 
       async sendPasswordResetCode(email) {
@@ -332,9 +456,14 @@ export function useAuth(): AuthContextValue {
  * Prove the person holding the phone is the person who owns the account.
  *
  * There is no dedicated endpoint for this — signing in again is how you check a
- * password. The side effect is a freshly minted session for the same user,
- * which is harmless: `onAuthStateChange` sees the same id, so nothing above
- * rebuilds, and the account gets a newer token out of it than it had.
+ * password. What used to be described here as a harmless side effect, a freshly
+ * minted session for the same user, is now load-bearing: GoTrue's
+ * reauthentication requirement can be satisfied by a recent enough login, and a
+ * session created milliseconds ago is as recent as they come. That is what lets
+ * `changePassword` usually complete without emailing anybody a nonce.
+ *
+ * It stays harmless in every other respect — `onAuthStateChange` sees the same
+ * id, so nothing above rebuilds, and the account gets a newer token than it had.
  *
  * Returns the message to show, or null when the password checked out.
  */
@@ -396,6 +525,18 @@ function describe(error: AuthError): string {
     // wording has to cover both without guessing which happened.
     case 'otp_expired':
       return 'That code is wrong or has expired. Check the latest email, or send a new code.';
+    // The nonce `changePassword` asked for came back wrong or stale. Worth its
+    // own copy rather than falling in with `otp_expired`: the user has two
+    // codes' worth of email in front of them by this point on some flows, and
+    // naming which one is wrong is the difference between one retry and three.
+    case 'reauthentication_not_valid':
+      return 'That confirmation code is wrong or has expired. Check the latest email.';
+    // Reached only if the retry somehow arrives without a nonce — the caller is
+    // meant to have collected one from `needsNonce`. Surfacing the raw message
+    // here would say "reauthentication needed", which means nothing to a user
+    // who is looking at a form that just asked them for a code.
+    case 'reauthentication_needed':
+      return 'Check your email for a confirmation code and enter it to finish.';
     case 'over_email_send_rate_limit':
       return 'Too many emails just went out. Wait a minute and try again.';
     case 'over_request_rate_limit':

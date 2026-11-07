@@ -7,10 +7,9 @@ import { useTheme } from '@/hooks/use-theme';
 /**
  * The app's one surface primitive.
  *
- * Separation comes from a hairline border rather than a heavy shadow — on a
- * warm off-white ground a white card already reads as raised, so the shadow
- * only hints at the edge. A drop shadow doing the whole job would make six
- * stacked cards look like a pile of floating slabs.
+ * Separation comes from a hairline border and nothing else. On the grey paper
+ * ground a white card already reads as raised; a drop shadow under every card
+ * would make a dashboard of them look like a pile of floating slabs.
  *
  * Chart palettes are validated against this card's colour, not the page
  * ground, because that's what the marks actually sit on.
@@ -61,11 +60,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     padding: Spacing.four,
     gap: Spacing.three,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
   },
   header: {
     flexDirection: 'row',

@@ -99,6 +99,10 @@ export default function BudgetScreen() {
               placeholder="Personal"
               placeholderTextColor={theme.textSecondary}
               autoFocus={isNew}
+              // Matches `budgets_name_length` in the input_bounds migration.
+              // The column is the real limit; this is what stops anyone meeting
+              // it by accident and getting an error instead of a full stop.
+              maxLength={80}
               style={[styles.input, { color: theme.text }]}
               accessibilityLabel="Budget name"
             />

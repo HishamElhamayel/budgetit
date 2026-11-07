@@ -1,0 +1,13 @@
+# Vercel builds from source and needs only what the web export reads.
+#
+# .env* is the important line: .env.local holds RESEND_API_KEY, which must
+# never leave this machine. The two EXPO_PUBLIC_ values the build needs are set
+# as Vercel environment variables instead.
+.env*
+!.env.example
+node_modules
+dist
+web-build
+ios
+android
+.expo

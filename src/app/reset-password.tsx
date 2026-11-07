@@ -31,6 +31,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PasswordChecklist } from '@/components/password-checklist';
+import { AuthShell } from '@/components/auth-shell';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Button } from '@/components/ui/button';
@@ -219,211 +220,213 @@ export default function ResetPasswordScreen() {
         : 'That worked. Set a new password to finish.';
 
   return (
-    <ThemedView style={styles.root}>
-      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView
-          style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView
-            contentContainerStyle={styles.content}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag">
-            <Pressable
-              onPress={() => void back()}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-              hitSlop={Spacing.two}
-              style={({ pressed }) => [styles.back, pressed && styles.pressed]}>
-              <SymbolView
-                name={{ ios: 'arrow.left', android: 'arrow_back', web: 'arrow_back' }}
-                size={22}
-                weight="medium"
-                tintColor={theme.text}
-              />
-            </Pressable>
-
-            <View style={styles.header}>
-              <ThemedText type="title">{title}</ThemedText>
-              <ThemedText type="body" themeColor="textSecondary">
-                {subtitle}
-              </ThemedText>
-            </View>
-
-            <View style={styles.form}>
-              {step === 'request' && (
-                <View style={styles.field}>
-                  <ThemedText type="label" themeColor="textSecondary">
-                    Email
-                  </ThemedText>
-                  <TextInput
-                    value={email}
-                    onChangeText={setEmail}
-                    placeholder="you@example.com"
-                    placeholderTextColor={theme.textMuted}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    autoComplete="email"
-                    keyboardType="email-address"
-                    inputMode="email"
-                    textContentType="emailAddress"
-                    returnKeyType="go"
-                    onSubmitEditing={() => void requestCode()}
-                    style={inputStyle}
-                    accessibilityLabel="Email"
-                  />
-                </View>
-              )}
-
-              {step === 'verify' && (
-                <CodeField
-                  value={code}
-                  length={EMAIL_CODE_LENGTH}
-                  onChange={(next) => {
-                    setCode(next);
-                    // Editing after a rejection re-arms the auto-submit.
-                    if (next.length < EMAIL_CODE_LENGTH) submitted.current = null;
-                  }}
-                  editable={!busy}
-                  autoFocus
-                  accessibilityLabel={`${EMAIL_CODE_LENGTH} digit code`}
-                />
-              )}
-
-              {step === 'choose' && (
-                <>
-                  <View style={styles.field}>
-                    <ThemedText type="label" themeColor="textSecondary">
-                      New password
-                    </ThemedText>
-                    <TextInput
-                      value={password}
-                      onChangeText={setPassword}
-                      placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-                      placeholderTextColor={theme.textMuted}
-                      secureTextEntry
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      autoComplete="new-password"
-                      textContentType="newPassword"
-                      returnKeyType="next"
-                      style={inputStyle}
-                      accessibilityLabel="New password"
-                    />
-                  </View>
-
-                  {/* Directly under the field it judges, and only once there is
-                      something to judge. */}
-                  {password.length > 0 && <PasswordChecklist rules={passwordRules} />}
-
-                  <View style={styles.field}>
-                    <ThemedText type="label" themeColor="textSecondary">
-                      Confirm password
-                    </ThemedText>
-                    <TextInput
-                      value={confirmation}
-                      onChangeText={setConfirmation}
-                      placeholder="Type it again"
-                      placeholderTextColor={theme.textMuted}
-                      secureTextEntry
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      autoComplete="new-password"
-                      textContentType="newPassword"
-                      returnKeyType="go"
-                      onSubmitEditing={() => void savePassword()}
-                      style={inputStyle}
-                      accessibilityLabel="Confirm password"
-                    />
-                  </View>
-
-                  {/* Only once they've started typing the confirmation —
-                      flagging a mismatch against an empty field is nagging. */}
-                  {confirmation.length > 0 && !passwordsMatch && (
-                    <ThemedText type="label" style={{ color: ChartInk[scheme].critical }}>
-                      Those two don&apos;t match yet.
-                    </ThemedText>
-                  )}
-                </>
-              )}
-
-              {error && (
-                <ThemedText
-                  type="label"
-                  style={{ color: ChartInk[scheme].critical }}
-                  accessibilityRole="alert">
-                  {error}
-                </ThemedText>
-              )}
-
-              {notice && !error && (
-                <ThemedText type="label" themeColor="accentInk" accessibilityRole="alert">
-                  {notice}
-                </ThemedText>
-              )}
-
-              {step === 'request' && (
-                <Button
-                  label="Send code"
-                  onPress={() => void requestCode()}
-                  disabled={!emailLooksValid || busy}
-                  busy={busy}
-                />
-              )}
-
-              {/* No submit button on this step: the field auto-submits when the
-                  last digit lands, so a button would only ever be pressed
-                  after the work had already started. */}
-              {step === 'verify' &&
-                (cooldown > 0 ? (
-                  <ThemedText type="label" themeColor="textSecondary">
-                    Resend code in {formatCountdown(cooldown)}
-                  </ThemedText>
-                ) : (
-                  <Pressable
-                    onPress={() => {
-                      setCode('');
-                      submitted.current = null;
-                      void requestCode({ resend: true });
-                    }}
-                    disabled={busy}
-                    accessibilityRole="button"
-                    style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}>
-                    <ThemedText type="label" themeColor="accentInk">
-                      Send a new code
-                    </ThemedText>
-                  </Pressable>
-                ))}
-
-              {step === 'choose' && (
-                <Button
-                  label="Save new password"
-                  onPress={() => void savePassword()}
-                  disabled={!passwordAllowed || !passwordsMatch || busy}
-                  busy={busy}
-                />
-              )}
-
+    <AuthShell>
+      <ThemedView style={styles.root}>
+        <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+          <KeyboardAvoidingView
+            style={styles.flex}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <ScrollView
+              contentContainerStyle={styles.content}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag">
               <Pressable
-                onPress={() => {
-                  if (step === 'choose') {
-                    void cancelPasswordReset();
-                    return;
-                  }
-                  router.back();
-                }}
+                onPress={() => void back()}
                 disabled={busy}
                 accessibilityRole="button"
-                style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}>
-                <ThemedText type="label" themeColor="textSecondary">
-                  {step === 'choose' ? 'Cancel and sign out' : 'Back to sign in'}
-                </ThemedText>
+                accessibilityLabel="Back"
+                hitSlop={Spacing.two}
+                style={({ pressed }) => [styles.back, pressed && styles.pressed]}>
+                <SymbolView
+                  name={{ ios: 'arrow.left', android: 'arrow_back', web: 'arrow_back' }}
+                  size={22}
+                  weight="medium"
+                  tintColor={theme.text}
+                />
               </Pressable>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </ThemedView>
+
+              <View style={styles.header}>
+                <ThemedText type="title">{title}</ThemedText>
+                <ThemedText type="body" themeColor="textSecondary">
+                  {subtitle}
+                </ThemedText>
+              </View>
+
+              <View style={styles.form}>
+                {step === 'request' && (
+                  <View style={styles.field}>
+                    <ThemedText type="label" themeColor="textSecondary">
+                      Email
+                    </ThemedText>
+                    <TextInput
+                      value={email}
+                      onChangeText={setEmail}
+                      placeholder="you@example.com"
+                      placeholderTextColor={theme.textMuted}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      autoComplete="email"
+                      keyboardType="email-address"
+                      inputMode="email"
+                      textContentType="emailAddress"
+                      returnKeyType="go"
+                      onSubmitEditing={() => void requestCode()}
+                      style={inputStyle}
+                      accessibilityLabel="Email"
+                    />
+                  </View>
+                )}
+
+                {step === 'verify' && (
+                  <CodeField
+                    value={code}
+                    length={EMAIL_CODE_LENGTH}
+                    onChange={(next) => {
+                      setCode(next);
+                      // Editing after a rejection re-arms the auto-submit.
+                      if (next.length < EMAIL_CODE_LENGTH) submitted.current = null;
+                    }}
+                    editable={!busy}
+                    autoFocus
+                    accessibilityLabel={`${EMAIL_CODE_LENGTH} digit code`}
+                  />
+                )}
+
+                {step === 'choose' && (
+                  <>
+                    <View style={styles.field}>
+                      <ThemedText type="label" themeColor="textSecondary">
+                        New password
+                      </ThemedText>
+                      <TextInput
+                        value={password}
+                        onChangeText={setPassword}
+                        placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                        placeholderTextColor={theme.textMuted}
+                        secureTextEntry
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        autoComplete="new-password"
+                        textContentType="newPassword"
+                        returnKeyType="next"
+                        style={inputStyle}
+                        accessibilityLabel="New password"
+                      />
+                    </View>
+
+                    {/* Directly under the field it judges, and only once there is
+                        something to judge. */}
+                    {password.length > 0 && <PasswordChecklist rules={passwordRules} />}
+
+                    <View style={styles.field}>
+                      <ThemedText type="label" themeColor="textSecondary">
+                        Confirm password
+                      </ThemedText>
+                      <TextInput
+                        value={confirmation}
+                        onChangeText={setConfirmation}
+                        placeholder="Type it again"
+                        placeholderTextColor={theme.textMuted}
+                        secureTextEntry
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        autoComplete="new-password"
+                        textContentType="newPassword"
+                        returnKeyType="go"
+                        onSubmitEditing={() => void savePassword()}
+                        style={inputStyle}
+                        accessibilityLabel="Confirm password"
+                      />
+                    </View>
+
+                    {/* Only once they've started typing the confirmation —
+                        flagging a mismatch against an empty field is nagging. */}
+                    {confirmation.length > 0 && !passwordsMatch && (
+                      <ThemedText type="label" style={{ color: ChartInk[scheme].critical }}>
+                        Those two don&apos;t match yet.
+                      </ThemedText>
+                    )}
+                  </>
+                )}
+
+                {error && (
+                  <ThemedText
+                    type="label"
+                    style={{ color: ChartInk[scheme].critical }}
+                    accessibilityRole="alert">
+                    {error}
+                  </ThemedText>
+                )}
+
+                {notice && !error && (
+                  <ThemedText type="label" themeColor="accentInk" accessibilityRole="alert">
+                    {notice}
+                  </ThemedText>
+                )}
+
+                {step === 'request' && (
+                  <Button
+                    label="Send code"
+                    onPress={() => void requestCode()}
+                    disabled={!emailLooksValid || busy}
+                    busy={busy}
+                  />
+                )}
+
+                {/* No submit button on this step: the field auto-submits when the
+                    last digit lands, so a button would only ever be pressed
+                    after the work had already started. */}
+                {step === 'verify' &&
+                  (cooldown > 0 ? (
+                    <ThemedText type="label" themeColor="textSecondary">
+                      Resend code in {formatCountdown(cooldown)}
+                    </ThemedText>
+                  ) : (
+                    <Pressable
+                      onPress={() => {
+                        setCode('');
+                        submitted.current = null;
+                        void requestCode({ resend: true });
+                      }}
+                      disabled={busy}
+                      accessibilityRole="button"
+                      style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}>
+                      <ThemedText type="label" themeColor="accentInk">
+                        Send a new code
+                      </ThemedText>
+                    </Pressable>
+                  ))}
+
+                {step === 'choose' && (
+                  <Button
+                    label="Save new password"
+                    onPress={() => void savePassword()}
+                    disabled={!passwordAllowed || !passwordsMatch || busy}
+                    busy={busy}
+                  />
+                )}
+
+                <Pressable
+                  onPress={() => {
+                    if (step === 'choose') {
+                      void cancelPasswordReset();
+                      return;
+                    }
+                    router.back();
+                  }}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}>
+                  <ThemedText type="label" themeColor="textSecondary">
+                    {step === 'choose' ? 'Cancel and sign out' : 'Back to sign in'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </ThemedView>
+    </AuthShell>
   );
 }
 
